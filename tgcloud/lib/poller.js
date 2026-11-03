@@ -25,7 +25,7 @@ const USER_AGENT = 'TelegramServerlessRSSBot/1.0 (+https://core.telegram.org/bot
  * 4. Rich text message -> api.sendMessage with link preview
  * Automatically handles 403 (bot blocked) by pausing the subscription.
  */
-async function deliverItemToSubscriber({ sub, formatted, originalUrl, title, performer }) {
+async function deliverItemToSubscriber({ sub, formatted, originalUrl, title, performer, isChannelPost = false }) {
   try {
     // 1. Audio enclosure (Podcast)
     if (formatted.audioUrl && sub.sendMode !== 'link_only') {
@@ -46,56 +46,60 @@ async function deliverItemToSubscriber({ sub, formatted, originalUrl, title, per
       }
     }
 
-    // 2. Multi-photo album (media group of 2-10 photos)
-    if (
-      formatted.photos &&
-      formatted.photos.length > 1 &&
-      sub.sendMode !== 'link_only' &&
-      (sub.sendMode === 'photo' || formatted.canSendMediaGroup !== false)
-    ) {
-      try {
-        const caption = truncate(formatted.text, 1020);
-        const mediaGroup = formatted.photos.slice(0, 10).map((url, idx) => {
-          const item = { type: 'photo', media: url };
-          if (idx === 0) {
-            item.caption = caption;
-            item.parse_mode = 'HTML';
-          }
-          return item;
-        });
+    // 2. Photo Album or Single Photo:
+    // Only send as photos/albums if:
+    //  a) It's a Telegram channel post with photos, OR
+    //  b) The user explicitly set sendMode: 'photo' in settings
+    // For standard RSS feeds (Substack, blogs, news), default mode ALWAYS uses text + link preview
+    // so Telegram generates the native ⚡ Instant View reader button!
+    const sendAsMedia = (isChannelPost && formatted.photos && formatted.photos.length > 0) || (sub.sendMode === 'photo');
 
-        await api.sendMediaGroup({
-          chat_id: sub.chatId,
-          media: mediaGroup,
-        });
-        return;
-      } catch {
-        // Fall back to single photo or text
+    if (sendAsMedia && sub.sendMode !== 'link_only') {
+      // 2a. Multi-photo album (media group of 2-10 photos)
+      if (formatted.photos && formatted.photos.length > 1) {
+        try {
+          const caption = truncate(formatted.text, 1020);
+          const mediaGroup = formatted.photos.slice(0, 10).map((url, idx) => {
+            const item = { type: 'photo', media: url };
+            if (idx === 0) {
+              item.caption = caption;
+              item.parse_mode = 'HTML';
+            }
+            return item;
+          });
+
+          await api.sendMediaGroup({
+            chat_id: sub.chatId,
+            media: mediaGroup,
+          });
+          return;
+        } catch {
+          // Fall back to single photo or text
+        }
+      }
+
+      // 2b. Single photo with caption
+      if (formatted.photoUrl) {
+        try {
+          const caption = truncate(formatted.text, 1020);
+          await api.sendPhoto({
+            chat_id: sub.chatId,
+            photo: formatted.photoUrl,
+            caption,
+            parse_mode: 'HTML',
+            reply_markup: formatted.replyMarkup,
+          });
+          return;
+        } catch {
+          // Fall back to text message
+        }
       }
     }
 
-    // 3. Single photo with caption
-    if (
-      formatted.photoUrl &&
-      sub.sendMode !== 'link_only' &&
-      (sub.sendMode === 'photo' || formatted.canSendPhoto)
-    ) {
-      try {
-        const caption = truncate(formatted.text, 1020);
-        await api.sendPhoto({
-          chat_id: sub.chatId,
-          photo: formatted.photoUrl,
-          caption,
-          parse_mode: 'HTML',
-          reply_markup: formatted.replyMarkup,
-        });
-        return;
-      } catch {
-        // Fall back to text message
-      }
-    }
-
-    // 4. Clean text message with rich link preview
+    // 3. Default / Instant View mode:
+    // Clean text message with rich link preview.
+    // Telegram's servers automatically parse Substack, Medium, WordPress, etc.
+    // and render the native ⚡ Instant View button directly inside Telegram!
     await api.sendMessage({
       chat_id: sub.chatId,
       text: formatted.text,
@@ -204,6 +208,7 @@ export async function pollSingleTelegramChannel(feedUrl) {
           originalUrl: post.url,
           title: post.id ? `Post #${post.id}` : undefined,
           performer: channelTitle,
+          isChannelPost: true,
         });
       }
     }
@@ -360,9 +365,10 @@ export async function pollSingleFeed(feedUrl) {
         await deliverItemToSubscriber({
           sub,
           formatted,
-          originalUrl: item.link,
+          originalUrl: telegraphUrl || item.link,
           title: item.title,
           performer: parsedFeed.title,
+          isChannelPost: false,
         });
       }
     }
@@ -487,6 +493,7 @@ export async function forcePollFeed(feedUrl, chatId, count = 1) {
           originalUrl: post.url,
           title: post.id ? `Post #${post.id}` : undefined,
           performer: data.channelTitle,
+          isChannelPost: true,
         });
         sentCount++;
       }
@@ -545,9 +552,10 @@ export async function forcePollFeed(feedUrl, chatId, count = 1) {
       await deliverItemToSubscriber({
         sub,
         formatted,
-        originalUrl: item.link,
+        originalUrl: telegraphUrl || item.link,
         title: item.title,
         performer: parsedFeed.title,
+        isChannelPost: false,
       });
       sentCount++;
     }

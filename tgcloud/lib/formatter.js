@@ -199,7 +199,7 @@ export function formatPost(item, feedTitle, opts = {}) {
   );
   const photos = imageMedia.map((m) => m.url);
   const photo = photos[0] || null;
-  const isPhoto = Boolean(photo && opts.sendMode !== 'link_only');
+  const isPhoto = Boolean(photo && opts.sendMode === 'photo');
 
   // Extract audio enclosure (podcasts)
   const audioMedia = item.audio || (item.media || []).find(
