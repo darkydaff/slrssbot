@@ -1,0 +1,12 @@
+stages:
+  - poll
+
+scheduled_poll:
+  stage: poll
+  image: node:22
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+  script:
+    - npm ci
+    - npx tgcloud run endpoints/poll '{}'

@@ -1,0 +1,16 @@
+{
+  "name": "rsstg",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@tgcloud/cli": "^0.2.0"
+  },
+  "scripts": {
+    "deploy": "tgcloud push",
+    "status": "tgcloud status",
+    "run": "tgcloud run",
+    "poll": "tgcloud run endpoints/poll '{}'",
+    "poll:daemon": "node scripts/poll_runner.js",
+    "test": "node --test"
+  }
+}

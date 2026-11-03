@@ -1,0 +1,13 @@
+[Unit]
+Description=Trigger rsstg poller every 5 minutes
+RefuseManualStart=no
+RefuseManualStop=no
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

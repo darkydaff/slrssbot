@@ -1,0 +1,13 @@
+[Unit]
+Description=RSS to Telegram Serverless Auto-Poller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/git/rsstg
+Environment="PATH=/home/darkydaff/.nvm/versions/node/v22.23.2/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/home/darkydaff/.nvm/versions/node/v22.23.2/bin/node scripts/poll_runner.js --once
+StandardOutput=journal
+StandardError=journal
+
