@@ -258,12 +258,9 @@ export async function fetchChannelData(channelUsername) {
         lastError = err;
       }
     }
-
-    if (attempt === 0) {
-      await new Promise((r) => setTimeout(r, 600));
-    }
   }
 
   throw new Error(`Failed to fetch public channel @${cleanUsername}: ${lastError ? lastError.message : 'Channel not found or empty'}`);
 }
+
 

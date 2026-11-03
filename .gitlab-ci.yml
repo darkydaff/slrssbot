@@ -10,3 +10,4 @@ scheduled_poll:
   script:
     - npm ci
     - npx tgcloud run endpoints/poll '{}'
+
