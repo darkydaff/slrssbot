@@ -124,3 +124,51 @@ test('formatChannelPost formats posts following clean Telegram channel rules wit
   assert.equal(linkOnly.photoUrl, null);
 });
 
+test('cleanWidgetTextHtml transforms spoilers and expandable blockquotes', () => {
+  const rawHtml = 'Check this: <span class="tgme_widget_message_text_spoiler">Classified Info</span> and <blockquote expandable>Long citation here...</blockquote>';
+  const cleaned = cleanWidgetTextHtml(rawHtml);
+  assert.ok(cleaned.includes('<tg-spoiler>Classified Info</tg-spoiler>'));
+  assert.ok(cleaned.includes('<blockquote expandable>Long citation here...</blockquote>'));
+});
+
+test('parseChannelHtml and formatChannelPost handle multi-photo albums and video posts', () => {
+  const albumHtml = `
+    <div class="tgme_widget_message" data-post="testchannel/500">
+      <div class="tgme_widget_message_bubble">
+        <a class="tgme_widget_message_photo_wrap photo_wrap" style="background-image:url('https://cdn.example.com/p1.jpg')"></a>
+        <a class="tgme_widget_message_photo_wrap grouped_layer" style="background-image:url('https://cdn.example.com/p2.jpg')"></a>
+        <a class="tgme_widget_message_photo_wrap grouped_layer" style="background-image:url('https://cdn.example.com/p3.jpg')"></a>
+        <div class="tgme_widget_message_text js-message_text">Album post with 3 photos</div>
+        <time datetime="2026-11-03T11:00:00Z">11:00</time>
+      </div>
+    </div>
+    <div class="tgme_widget_message" data-post="testchannel/501">
+      <div class="tgme_widget_message_bubble">
+        <div class="tgme_widget_message_video_player js-message_video_player"></div>
+        <i class="tgme_widget_message_video_thumb video_thumb" style="background-image:url('https://cdn.example.com/thumb.jpg')"></i>
+        <div class="tgme_widget_message_text js-message_text">Video post</div>
+        <time datetime="2026-11-03T11:05:00Z">11:05</time>
+      </div>
+    </div>
+  `;
+
+  const parsed = parseChannelHtml(albumHtml, 'testchannel');
+  assert.equal(parsed.posts.length, 2);
+
+  // Album Post
+  const p1 = parsed.posts[0];
+  assert.equal(p1.photos.length, 3);
+  assert.equal(p1.photoUrl, 'https://cdn.example.com/p1.jpg');
+  const fmtAlbum = formatChannelPost(p1, 'Test Channel');
+  assert.equal(fmtAlbum.canSendMediaGroup, true);
+  assert.equal(fmtAlbum.photos.length, 3);
+
+  // Video Post
+  const p2 = parsed.posts[1];
+  assert.equal(p2.hasVideo, true);
+  const fmtVideo = formatChannelPost(p2, 'Test Channel');
+  assert.equal(fmtVideo.hasVideo, true);
+  assert.ok(fmtVideo.text.includes('Watch Video in Telegram'));
+  assert.ok(fmtVideo.replyMarkup?.inline_keyboard?.[0]?.[0]?.text?.includes('Watch Video'));
+});
+

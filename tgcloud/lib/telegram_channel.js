@@ -102,7 +102,13 @@ export function cleanWidgetTextHtml(rawHtml) {
   // 3. Convert emoji image tags (<i class="emoji" style="background-image:url(...)"><b>emoji</b></i>) to text
   text = text.replace(/<i\s+[^>]*?class=["'][^"']*emoji[^"']*["'][^>]*><b>([\s\S]*?)<\/b><\/i>/gi, '$1');
 
-  // 4. Pass through standard sanitizer
+  // 4. Convert Telegram widget spoilers into native Telegram <tg-spoiler>
+  text = text.replace(/<span\s+[^>]*?class=["'][^"']*(?:tgme_widget_message_text_spoiler|spoiler)[^"']*["'][^>]*>([\s\S]*?)<\/span>/gi, '<tg-spoiler>$1</tg-spoiler>');
+
+  // 5. Support expandable blockquotes
+  text = text.replace(/<blockquote\s+[^>]*?(?:class=["'][^"']*expandable[^"']*["']|expandable)[^>]*>([\s\S]*?)<\/blockquote>/gi, '<blockquote expandable>$1</blockquote>');
+
+  // 6. Pass through standard sanitizer
   return sanitizeToTelegramHtml(text);
 }
 
@@ -170,7 +176,7 @@ export function parseChannelHtml(html, channelUsername) {
 
     // Extract media photos and video thumbnails (excluding avatars and reactions)
     const photos = [];
-    const mediaRegex = /<(?:a|i)\s+[^>]*?class="[^"]*(?:photo_wrap|grouped_layer|video_thumb)[^"]*"[^>]*?style="[^"]*background-image:url\('([^']+)'\)/gi;
+    const mediaRegex = /<(?:a|i)\s+[^>]*?class="[^"]*(?:photo_wrap|grouped_layer|video_thumb)[^"]*"[^>]*?style="[^"]*background-image:\s*url\((?:'|"|&#39;|&quot;)?(https?:\/\/[^'")\s;]+)(?:'|"|&#39;|&quot;)?\)/gi;
     let m;
     while ((m = mediaRegex.exec(postHtml)) !== null) {
       const pUrl = m[1];
@@ -179,9 +185,14 @@ export function parseChannelHtml(html, channelUsername) {
       }
     }
 
-    // Check video
+    // Check video or round video
     const videoMatch = postHtml.match(/<video[^>]*src="([^"]+)"/i);
-    const hasVideo = Boolean(videoMatch || postHtml.includes('js-message_video_player'));
+    const hasVideo = Boolean(
+      videoMatch ||
+      postHtml.includes('js-message_video_player') ||
+      postHtml.includes('tgme_widget_message_video_player') ||
+      postHtml.includes('tgme_widget_message_roundvideo_player')
+    );
 
     // Extract publication time
     const timeMatch = postHtml.match(/<time datetime="([^"]+)"/i);

@@ -52,10 +52,14 @@ export function sanitizeToTelegramHtml(html) {
 
   // 2. Replace block breaks with newlines
   text = text.replace(/<br\s*\/?>/gi, '\n');
-  text = text.replace(/<\/(p|div|h[1-6]|li|blockquote|tr|table|article|section)>/gi, '\n\n');
+  text = text.replace(/<\/(p|div|h[1-6]|li|tr|table|article|section)>/gi, '\n\n');
   text = text.replace(/<li[^>]*>/gi, '• ');
 
   // 3. Normalize supported tags:
+  // Spoilers: convert spoiler spans into <tg-spoiler>
+  text = text.replace(/<span\s+[^>]*?class=["'][^"']*(?:tgme_widget_message_text_spoiler|spoiler)[^"']*["'][^>]*>([\s\S]*?)<\/span>/gi, '<tg-spoiler>$1</tg-spoiler>');
+  text = text.replace(/<\/?(tg-spoiler)(?:\s+[^>]*)?>/gi, (match) => match.startsWith('</') ? '</tg-spoiler>' : '<tg-spoiler>');
+
   // <b> and <strong> -> <b>
   text = text.replace(/<\/?(b|strong)(?:\s+[^>]*)?>/gi, (match) => match.startsWith('</') ? '</b>' : '<b>');
   // <i> and <em> -> <i>
@@ -67,8 +71,14 @@ export function sanitizeToTelegramHtml(html) {
   // <code> and <pre>
   text = text.replace(/<\/?code(?:\s+[^>]*)?>/gi, (match) => match.startsWith('</') ? '</code>' : '<code>');
   text = text.replace(/<\/?pre(?:\s+[^>]*)?>/gi, (match) => match.startsWith('</') ? '</pre>' : '<pre>');
-  // <blockquote>
-  text = text.replace(/<\/?blockquote(?:\s+[^>]*)?>/gi, (match) => match.startsWith('</') ? '</blockquote>' : '<blockquote>');
+  // <blockquote> (preserve expandable attribute)
+  text = text.replace(/<blockquote(?:\s+([^>]*))?>/gi, (match, attrs) => {
+    if (attrs && /expandable/i.test(attrs)) {
+      return '<blockquote expandable>';
+    }
+    return '<blockquote>';
+  });
+  text = text.replace(/<\/blockquote>/gi, '</blockquote>');
 
   // 4. Preserve <a> tags with href; strip other attributes
   text = text.replace(/<a\s+[^>]*?href=["']([^"']+)["'][^>]*?>/gi, '<a href="$1">');
@@ -161,10 +171,11 @@ export function matchesFilter(item, includeRule, excludeRule) {
 
 /**
  * Format a feed post into a Telegram message payload.
+ * Supports podcasts (audio enclosures), YouTube videos, and multi-image galleries.
  * @param {object} item
  * @param {string} feedTitle
  * @param {object} [opts]
- * @returns {{text: string, photoUrl: string|null}}
+ * @returns {{text: string, photoUrl: string|null, photos: string[], audioUrl: string|null, replyMarkup?: object}}
  */
 export function formatPost(item, feedTitle, opts = {}) {
   const title = escapeHtml(item.title || 'Untitled');
@@ -182,36 +193,68 @@ export function formatPost(item, feedTitle, opts = {}) {
   const rawContent = item.content || item.description || '';
   const cleanBody = sanitizeToTelegramHtml(rawContent);
 
-  const photo = item.media && item.media.length > 0 ? item.media[0].url : null;
+  // Extract images
+  const imageMedia = (item.media || []).filter(
+    (m) => !m.type || m.type.startsWith('image') || m.type === 'photo'
+  );
+  const photos = imageMedia.map((m) => m.url);
+  const photo = photos[0] || null;
   const isPhoto = Boolean(photo && opts.sendMode !== 'link_only');
+
+  // Extract audio enclosure (podcasts)
+  const audioMedia = item.audio || (item.media || []).find(
+    (m) => m.type && (m.type.startsWith('audio') || /\.(mp3|m4a|ogg|wav|aac)(\?|$)/i.test(m.url))
+  );
+  const audioUrl = audioMedia ? audioMedia.url : null;
+
+  // Detect YouTube video
+  const isYouTube = link && /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\//i.test(link);
 
   const maxBodyLength = isPhoto ? 700 : 3200; // Leave room for header and footer
   const truncatedBody = truncate(cleanBody, maxBodyLength);
 
   let footer = '';
+  if (audioUrl) {
+    footer += `\n🎙️ <a href="${escapeHtml(audioUrl)}">Listen to Podcast Episode (Audio)</a>`;
+  }
+  if (isYouTube) {
+    footer += `\n▶️ <a href="${escapeHtml(link)}">Watch Video on YouTube</a>`;
+  }
   if (opts.telegraphUrl) {
     footer += `\n⚡ <a href="${escapeHtml(opts.telegraphUrl)}">Instant View</a>`;
   }
-  if (link) {
+  if (link && !isYouTube) {
     footer += `\n🔗 <a href="${escapeHtml(link)}">Read Original</a>`;
   }
 
   const fullText = `${header}${truncatedBody}${footer}`.trim();
 
+  // Build inline keyboard reply_markup if media buttons are helpful
+  const inlineButtons = [];
+  if (audioUrl) {
+    inlineButtons.push([{ text: '🎙️ Listen to Podcast Episode', url: audioUrl }]);
+  }
+  if (isYouTube) {
+    inlineButtons.push([{ text: '▶️ Watch on YouTube', url: link }]);
+  }
+
   return {
     text: fullText,
     photoUrl: isPhoto ? photo : null,
+    photos: isPhoto ? photos : [],
+    audioUrl,
+    replyMarkup: inlineButtons.length > 0 ? { inline_keyboard: inlineButtons } : undefined,
   };
 }
 
 /**
  * Format a native Telegram channel post into a message payload.
  * Follows clean Telegram channel rules: no fake repeated article title,
- * clean rich text, forwarded attribution, and original post link.
+ * clean rich text, forwarded attribution, albums, and original post link.
  * @param {object} post
  * @param {string} channelTitle
  * @param {object} [opts]
- * @returns {{text: string, photoUrl: string|null, canSendPhoto: boolean}}
+ * @returns {{text: string, photoUrl: string|null, photos: string[], canSendPhoto: boolean, canSendMediaGroup: boolean, hasVideo: boolean, replyMarkup?: object}}
  */
 export function formatChannelPost(post, channelTitle, opts = {}) {
   const displayTitle = escapeHtml(opts.customTitle || channelTitle || post.channel || 'Telegram Channel');
@@ -221,7 +264,10 @@ export function formatChannelPost(post, channelTitle, opts = {}) {
     return {
       text: `<b>${displayTitle}</b>\n🔗 <a href="${escapeHtml(postUrl)}">View post in Telegram</a>`,
       photoUrl: null,
+      photos: [],
       canSendPhoto: false,
+      canSendMediaGroup: false,
+      hasVideo: Boolean(post.hasVideo),
     };
   }
 
@@ -237,12 +283,25 @@ export function formatChannelPost(post, channelTitle, opts = {}) {
   }
 
   const cleanBody = post.textHtml || '';
-  const photo = post.photoUrl || (post.photos && post.photos.length > 0 ? post.photos[0] : null);
-  const footer = `\n\n🔗 <a href="${escapeHtml(postUrl)}">View in Telegram</a>`;
+  const photos = post.photos && post.photos.length > 0 ? post.photos : (post.photoUrl ? [post.photoUrl] : []);
+  const photo = photos[0] || null;
+
+  let footer = '';
+  if (post.hasVideo) {
+    footer += `\n\n📹 <a href="${escapeHtml(postUrl)}">Watch Video in Telegram</a>`;
+  } else {
+    footer += `\n\n🔗 <a href="${escapeHtml(postUrl)}">View in Telegram</a>`;
+  }
 
   const fullMessage = `${header}${cleanBody}${footer}`.trim();
   const isPhotoMode = opts.sendMode === 'photo';
   const fitsCaption = fullMessage.length <= 1020;
+
+  const inlineButtons = [];
+  if (post.hasVideo) {
+    inlineButtons.push([{ text: '📹 Watch Video in Telegram', url: postUrl }]);
+  }
+  const replyMarkup = inlineButtons.length > 0 ? { inline_keyboard: inlineButtons } : undefined;
 
   if (photo && (isPhotoMode || fitsCaption)) {
     let captionText = fullMessage;
@@ -253,7 +312,11 @@ export function formatChannelPost(post, channelTitle, opts = {}) {
     return {
       text: captionText,
       photoUrl: photo,
+      photos,
       canSendPhoto: true,
+      canSendMediaGroup: photos.length > 1,
+      hasVideo: Boolean(post.hasVideo),
+      replyMarkup,
     };
   }
 
@@ -261,7 +324,11 @@ export function formatChannelPost(post, channelTitle, opts = {}) {
   return {
     text: `${header}${truncatedText}${footer}`.trim(),
     photoUrl: photo,
+    photos,
     canSendPhoto: false,
+    canSendMediaGroup: false,
+    hasVideo: Boolean(post.hasVideo),
+    replyMarkup,
   };
 }
 

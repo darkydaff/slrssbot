@@ -6,7 +6,7 @@ import { db, api, fetch, BotApiError } from 'sdk';
 import { eq, and, sql } from 'sdk/db';
 import { subscriptions, feedStates, feedEntries } from '../schema.js';
 import { parseFeed } from './rss.js';
-import { formatPost, formatChannelPost, matchesFilter } from './formatter.js';
+import { formatPost, formatChannelPost, matchesFilter, truncate } from './formatter.js';
 import { createTelegraphPage } from './telegraph.js';
 import {
   isTelegramChannelUrl,
@@ -16,6 +16,108 @@ import {
 } from './telegram_channel.js';
 
 const USER_AGENT = 'TelegramServerlessRSSBot/1.0 (+https://core.telegram.org/bots/serverless)';
+
+/**
+ * Dispatch formatted post to a subscriber using the best Telegram API delivery method:
+ * 1. Audio podcast -> api.sendAudio (falls back to photo/album or text on error)
+ * 2. Multi-photo album -> api.sendMediaGroup (falls back to single photo or text on error)
+ * 3. Single photo -> api.sendPhoto (falls back to text on error)
+ * 4. Rich text message -> api.sendMessage with link preview
+ * Automatically handles 403 (bot blocked) by pausing the subscription.
+ */
+async function deliverItemToSubscriber({ sub, formatted, originalUrl, title, performer }) {
+  try {
+    // 1. Audio enclosure (Podcast)
+    if (formatted.audioUrl && sub.sendMode !== 'link_only') {
+      try {
+        const caption = truncate(formatted.text, 1020);
+        await api.sendAudio({
+          chat_id: sub.chatId,
+          audio: formatted.audioUrl,
+          caption,
+          parse_mode: 'HTML',
+          title: title || undefined,
+          performer: performer || undefined,
+          reply_markup: formatted.replyMarkup,
+        });
+        return;
+      } catch {
+        // Fall back to album, photo, or text
+      }
+    }
+
+    // 2. Multi-photo album (media group of 2-10 photos)
+    if (
+      formatted.photos &&
+      formatted.photos.length > 1 &&
+      sub.sendMode !== 'link_only' &&
+      (sub.sendMode === 'photo' || formatted.canSendMediaGroup !== false)
+    ) {
+      try {
+        const caption = truncate(formatted.text, 1020);
+        const mediaGroup = formatted.photos.slice(0, 10).map((url, idx) => {
+          const item = { type: 'photo', media: url };
+          if (idx === 0) {
+            item.caption = caption;
+            item.parse_mode = 'HTML';
+          }
+          return item;
+        });
+
+        await api.sendMediaGroup({
+          chat_id: sub.chatId,
+          media: mediaGroup,
+        });
+        return;
+      } catch {
+        // Fall back to single photo or text
+      }
+    }
+
+    // 3. Single photo with caption
+    if (
+      formatted.photoUrl &&
+      sub.sendMode !== 'link_only' &&
+      (sub.sendMode === 'photo' || formatted.canSendPhoto)
+    ) {
+      try {
+        const caption = truncate(formatted.text, 1020);
+        await api.sendPhoto({
+          chat_id: sub.chatId,
+          photo: formatted.photoUrl,
+          caption,
+          parse_mode: 'HTML',
+          reply_markup: formatted.replyMarkup,
+        });
+        return;
+      } catch {
+        // Fall back to text message
+      }
+    }
+
+    // 4. Clean text message with rich link preview
+    await api.sendMessage({
+      chat_id: sub.chatId,
+      text: formatted.text,
+      parse_mode: 'HTML',
+      link_preview_options: originalUrl
+        ? {
+            url: originalUrl,
+            prefer_large_media: true,
+            show_above_text: false,
+          }
+        : undefined,
+      reply_markup: formatted.replyMarkup,
+    });
+  } catch (sendErr) {
+    if (sendErr instanceof BotApiError && sendErr.code === 403) {
+      await db.update(subscriptions)
+        .set({ paused: true })
+        .where(eq(subscriptions.id, sub.id))
+        .run();
+    }
+  }
+}
 
 /**
  * Poll a Telegram public channel directly, process new posts, and broadcast to subscribers.
@@ -96,39 +198,13 @@ export async function pollSingleTelegramChannel(feedUrl) {
           customTitle: sub.customTitle,
         });
 
-        try {
-          if (formatted.canSendPhoto && formatted.photoUrl) {
-            try {
-              await api.sendPhoto({
-                chat_id: sub.chatId,
-                photo: formatted.photoUrl,
-                caption: formatted.text,
-                parse_mode: 'HTML',
-              });
-              continue;
-            } catch {
-              // Fallback to text message
-            }
-          }
-
-          await api.sendMessage({
-            chat_id: sub.chatId,
-            text: formatted.text,
-            parse_mode: 'HTML',
-            link_preview_options: {
-              url: post.url,
-              prefer_large_media: true,
-              show_above_text: false,
-            },
-          });
-        } catch (sendErr) {
-          if (sendErr instanceof BotApiError && sendErr.code === 403) {
-            await db.update(subscriptions)
-              .set({ paused: true })
-              .where(eq(subscriptions.id, sub.id))
-              .run();
-          }
-        }
+        await deliverItemToSubscriber({
+          sub,
+          formatted,
+          originalUrl: post.url,
+          title: post.id ? `Post #${post.id}` : undefined,
+          performer: channelTitle,
+        });
       }
     }
 
@@ -281,44 +357,13 @@ export async function pollSingleFeed(feedUrl) {
           telegraphUrl,
         });
 
-        try {
-          // If explicitly configured for photo mode and photo exists
-          if (sub.sendMode === 'photo' && formatted.photoUrl) {
-            try {
-              await api.sendPhoto({
-                chat_id: sub.chatId,
-                photo: formatted.photoUrl,
-                caption: formatted.text,
-                parse_mode: 'HTML',
-              });
-              continue;
-            } catch {
-              // Fallback to text message
-            }
-          }
-
-          // Default / Instant View mode: send as text message with rich preview and native Instant View
-          await api.sendMessage({
-            chat_id: sub.chatId,
-            text: formatted.text,
-            parse_mode: 'HTML',
-            link_preview_options: {
-              url: item.link,
-              prefer_large_media: true,
-              show_above_text: false,
-            },
-          });
-        } catch (sendErr) {
-          if (sendErr instanceof BotApiError) {
-            // 403 Forbidden: Bot was blocked by the user or kicked from the channel
-            if (sendErr.code === 403) {
-              await db.update(subscriptions)
-                .set({ paused: true })
-                .where(eq(subscriptions.id, sub.id))
-                .run();
-            }
-          }
-        }
+        await deliverItemToSubscriber({
+          sub,
+          formatted,
+          originalUrl: item.link,
+          title: item.title,
+          performer: parsedFeed.title,
+        });
       }
     }
 
@@ -424,10 +469,10 @@ export async function forcePollFeed(feedUrl, chatId, count = 1) {
         return { title: data.channelTitle, sentCount: 0, error: null };
       }
 
-      const sub = await db.select()
+      const sub = (await db.select()
         .from(subscriptions)
         .where(and(eq(subscriptions.chatId, chatId), eq(subscriptions.feedUrl, feedUrl)))
-        .get();
+        .get()) || { chatId, sendMode: 'default', customTitle: null };
 
       let sentCount = 0;
       for (const post of posts) {
@@ -436,30 +481,12 @@ export async function forcePollFeed(feedUrl, chatId, count = 1) {
           customTitle: sub?.customTitle,
         });
 
-        if (formatted.canSendPhoto && formatted.photoUrl) {
-          try {
-            await api.sendPhoto({
-              chat_id: chatId,
-              photo: formatted.photoUrl,
-              caption: formatted.text,
-              parse_mode: 'HTML',
-            });
-            sentCount++;
-            continue;
-          } catch {
-            // Fallback to text message
-          }
-        }
-
-        await api.sendMessage({
-          chat_id: chatId,
-          text: formatted.text,
-          parse_mode: 'HTML',
-          link_preview_options: {
-            url: post.url,
-            prefer_large_media: true,
-            show_above_text: false,
-          },
+        await deliverItemToSubscriber({
+          sub,
+          formatted,
+          originalUrl: post.url,
+          title: post.id ? `Post #${post.id}` : undefined,
+          performer: data.channelTitle,
         });
         sentCount++;
       }
@@ -489,10 +516,10 @@ export async function forcePollFeed(feedUrl, chatId, count = 1) {
       return { title: parsedFeed.title, sentCount: 0, error: null };
     }
 
-    const sub = await db.select()
+    const sub = (await db.select()
       .from(subscriptions)
       .where(and(eq(subscriptions.chatId, chatId), eq(subscriptions.feedUrl, feedUrl)))
-      .get();
+      .get()) || { chatId, sendMode: 'default', customTitle: null };
 
     let sentCount = 0;
     for (const item of items) {
@@ -515,30 +542,12 @@ export async function forcePollFeed(feedUrl, chatId, count = 1) {
         telegraphUrl,
       });
 
-      if (sub?.sendMode === 'photo' && formatted.photoUrl) {
-        try {
-          await api.sendPhoto({
-            chat_id: chatId,
-            photo: formatted.photoUrl,
-            caption: formatted.text,
-            parse_mode: 'HTML',
-          });
-          sentCount++;
-          continue;
-        } catch {
-          // Fallback to text message
-        }
-      }
-
-      await api.sendMessage({
-        chat_id: chatId,
-        text: formatted.text,
-        parse_mode: 'HTML',
-        link_preview_options: {
-          url: item.link,
-          prefer_large_media: true,
-          show_above_text: false,
-        },
+      await deliverItemToSubscriber({
+        sub,
+        formatted,
+        originalUrl: item.link,
+        title: item.title,
+        performer: parsedFeed.title,
       });
       sentCount++;
     }

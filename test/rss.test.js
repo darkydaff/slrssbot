@@ -119,3 +119,41 @@ test('OPML parse and generation works roundtrip', () => {
   assert.ok(generated.includes('xmlUrl="https://lobste.rs/rss"'));
 });
 
+test('parseFeed and formatPost extract podcast audio enclosures and YouTube links', () => {
+  const podcastXml = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Tech Talks Podcast</title>
+    <link>https://podcast.example.com</link>
+    <item>
+      <title>Episode 42: Building Serverless Bots</title>
+      <link>https://podcast.example.com/ep42</link>
+      <enclosure url="https://podcast.example.com/audio/ep42.mp3" type="audio/mpeg" length="45000000"/>
+      <description>Deep dive into serverless architectures</description>
+    </item>
+  </channel>
+</rss>`;
+
+  const feed = parseFeed(podcastXml);
+  assert.equal(feed.items.length, 1);
+  const ep = feed.items[0];
+  assert.ok(ep.audio);
+  assert.equal(ep.audio.url, 'https://podcast.example.com/audio/ep42.mp3');
+
+  const formatted = formatPost(ep, 'Tech Talks Podcast');
+  assert.equal(formatted.audioUrl, 'https://podcast.example.com/audio/ep42.mp3');
+  assert.ok(formatted.text.includes('Listen to Podcast Episode (Audio)'));
+  assert.ok(formatted.replyMarkup?.inline_keyboard?.[0]?.[0]?.text?.includes('Listen to Podcast'));
+
+  // Test YouTube formatting
+  const ytItem = {
+    title: 'New Keynote 2026',
+    link: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    content: 'Full keynote presentation',
+    media: [],
+  };
+  const fmtYt = formatPost(ytItem, 'YouTube Channel');
+  assert.ok(fmtYt.text.includes('Watch Video on YouTube'));
+  assert.ok(fmtYt.replyMarkup?.inline_keyboard?.[0]?.[0]?.text?.includes('Watch on YouTube'));
+});
+

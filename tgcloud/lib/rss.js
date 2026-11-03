@@ -67,35 +67,63 @@ function getAllTags(xml, tagName) {
 
 /**
  * Extract enclosures / media attachments from an XML item/entry.
+ * Supports audio podcast enclosures, video enclosures, and image attachments.
  * @param {string} block
- * @returns {Array<{url: string, type: string}>}
+ * @returns {Array<{url: string, type: string, length?: number}>}
  */
 function extractMedia(block) {
   const media = [];
-  
-  // 1. <enclosure url="..." type="..."/>
+  const seenUrls = new Set();
+
+  function addMedia(url, type = '', length = null) {
+    if (!url || seenUrls.has(url)) return;
+    seenUrls.add(url);
+    media.push({
+      url: decodeXml(url.trim()),
+      type: type.trim().toLowerCase(),
+      length: length ? parseInt(length, 10) : null,
+    });
+  }
+
+  // 1. <enclosure url="..." type="..." length="..."/>
   const enclosureRegex = /<enclosure\s+([^>]*?)\/?>/gi;
   let enc;
   while ((enc = enclosureRegex.exec(block)) !== null) {
     const url = getAttribute(enc[1], 'url');
     const type = getAttribute(enc[1], 'type') || '';
-    if (url) media.push({ url, type });
+    const length = getAttribute(enc[1], 'length');
+    if (url) addMedia(url, type, length);
   }
 
-  // 2. <media:content url="..." medium="image".../>
+  // 2. Atom <link rel="enclosure" href="..." type="..." length="..."/>
+  const atomEncRegex = /<link\s+[^>]*?rel=["']enclosure["'][^>]*?>/gi;
+  let aEnc;
+  while ((aEnc = atomEncRegex.exec(block)) !== null) {
+    const url = getAttribute(aEnc[1], 'href') || getAttribute(aEnc[1], 'url');
+    const type = getAttribute(aEnc[1], 'type') || '';
+    const length = getAttribute(aEnc[1], 'length');
+    if (url) addMedia(url, type, length);
+  }
+
+  // 3. <media:content url="..." medium="image|audio|video".../>
   const mediaRegex = /<media:content\s+([^>]*?)\/?>/gi;
   let m;
   while ((m = mediaRegex.exec(block)) !== null) {
     const url = getAttribute(m[1], 'url');
     const type = getAttribute(m[1], 'type') || getAttribute(m[1], 'medium') || '';
-    if (url) media.push({ url, type });
+    const length = getAttribute(m[1], 'fileSize');
+    if (url) addMedia(url, type, length);
   }
 
-  // 3. Fallback: find first <img> tag inside description/content
-  const imgRegex = /<img\s+[^>]*?src=["']([^"']+)["'][^>]*?>/i;
-  const imgMatch = block.match(imgRegex);
-  if (imgMatch && imgMatch[1]) {
-    media.push({ url: imgMatch[1], type: 'image' });
+  // 4. Extract <img> tags inside description/content (up to 10 images)
+  const imgRegex = /<img\s+[^>]*?src=["']([^"']+)["'][^>]*?>/gi;
+  let imgMatch;
+  while ((imgMatch = imgRegex.exec(block)) !== null) {
+    if (media.length >= 10) break;
+    const src = imgMatch[1];
+    if (src && !src.startsWith('data:')) {
+      addMedia(src, 'image');
+    }
   }
 
   return media;
@@ -125,6 +153,7 @@ function parseRss(xml) {
     const pubDateStr = getTagContent(block, 'pubDate') || getTagContent(block, 'dc:date');
     const pubDate = pubDateStr ? new Date(pubDateStr) : null;
     const media = extractMedia(block);
+    const audio = media.find((m) => m.type && (m.type.startsWith('audio') || /\.(mp3|m4a|ogg|wav|aac)(\?|$)/i.test(m.url))) || null;
 
     return {
       guid: guid.trim(),
@@ -134,6 +163,7 @@ function parseRss(xml) {
       content: contentEncoded || description,
       pubDate: pubDate && !isNaN(pubDate.getTime()) ? pubDate : null,
       media,
+      audio,
     };
   });
 
@@ -184,6 +214,7 @@ function parseAtom(xml) {
     const updatedStr = getTagContent(block, 'updated') || getTagContent(block, 'published');
     const pubDate = updatedStr ? new Date(updatedStr) : null;
     const media = extractMedia(block);
+    const audio = media.find((m) => m.type && (m.type.startsWith('audio') || /\.(mp3|m4a|ogg|wav|aac)(\?|$)/i.test(m.url))) || null;
 
     return {
       guid: (id || entryLink || entryTitle).trim(),
@@ -193,6 +224,7 @@ function parseAtom(xml) {
       content: content || summary || '',
       pubDate: pubDate && !isNaN(pubDate.getTime()) ? pubDate : null,
       media,
+      audio,
     };
   });
 
