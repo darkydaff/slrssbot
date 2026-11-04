@@ -1,9 +1,9 @@
-name: Scheduled Poll
+name: Manual Poll (Fallback)
 
+# Automated scheduled polling is handled by Cloudflare Workers Cron Triggers
+# (see wrangler.toml and cloudflare/worker.js).
+# This workflow is kept as a manual workflow_dispatch fallback only.
 on:
-  schedule:
-    # Run every 10 minutes
-    - cron: '*/10 * * * *'
   workflow_dispatch:
 
 jobs:

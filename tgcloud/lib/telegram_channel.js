@@ -93,22 +93,37 @@ export function cleanWidgetTextHtml(rawHtml) {
 
   let text = rawHtml;
 
-  // 1. Replace <br> and <br/> with newline
+  // 1. Decode basic XML entities in case text came from an RSS wrapper
+  if (text.includes('&lt;') || text.includes('&gt;')) {
+    text = text
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, '&');
+  }
+
+  // 2. Remove media wrapper anchors <a ...><img .../></a> so media links don't leak into body text
+  text = text.replace(/<a\b[^>]*>(?:\s*<img\b[^>]*>\s*)+<\/a>/gi, '');
+  text = text.replace(/<img\b[^>]*>/gi, '');
+
+  // 3. Replace <br> and <br/> with newline
   text = text.replace(/<br\s*\/?>/gi, '\n');
 
-  // 2. Remove javascript onclick / onhover confirm dialogs injected by Telegram web
+  // 4. Remove javascript onclick / onhover confirm dialogs injected by Telegram web
   text = text.replace(/<a\s+[^>]*?href=["']([^"']+)["'][^>]*?>([\s\S]*?)<\/a>/gi, '<a href="$1">$2</a>');
 
-  // 3. Convert emoji image tags (<i class="emoji" style="background-image:url(...)"><b>emoji</b></i>) to text
+  // 5. Convert emoji image tags (<i class="emoji" style="background-image:url(...)"><b>emoji</b></i>) to text
   text = text.replace(/<i\s+[^>]*?class=["'][^"']*emoji[^"']*["'][^>]*><b>([\s\S]*?)<\/b><\/i>/gi, '$1');
 
-  // 4. Convert Telegram widget spoilers into native Telegram <tg-spoiler>
+  // 6. Convert Telegram widget spoilers into native Telegram <tg-spoiler>
   text = text.replace(/<span\s+[^>]*?class=["'][^"']*(?:tgme_widget_message_text_spoiler|spoiler)[^"']*["'][^>]*>([\s\S]*?)<\/span>/gi, '<tg-spoiler>$1</tg-spoiler>');
 
-  // 5. Support expandable blockquotes
+  // 7. Support expandable blockquotes
   text = text.replace(/<blockquote\s+[^>]*?(?:class=["'][^"']*expandable[^"']*["']|expandable)[^>]*>([\s\S]*?)<\/blockquote>/gi, '<blockquote expandable>$1</blockquote>');
 
-  // 6. Pass through standard sanitizer
+  // 8. Pass through standard sanitizer
   return sanitizeToTelegramHtml(text);
 }
 
@@ -238,40 +253,116 @@ export async function fetchChannelData(channelUsername) {
   const cleanUsername = extractChannelUsername(channelUsername) || channelUsername;
   const canonicalUrl = `https://t.me/s/${cleanUsername}`;
 
-  const gateways = [
-    `https://r.jina.ai/${canonicalUrl}`,
+  // 1. Try public Telegram web preview directly (or via mirrors)
+  const candidateUrls = [
+    canonicalUrl,
+    `https://tg.i-c-a.su/rss/${cleanUsername}`,
   ];
 
   let lastError = null;
 
-  for (let attempt = 0; attempt < 2; attempt++) {
-    for (const gwUrl of gateways) {
-      try {
-        const res = await fetch(gwUrl, {
-          headers: {
-            'X-Return-Format': 'html',
-          },
-        });
+  for (const url of candidateUrls) {
+    try {
+      const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      };
 
-        if (!res.ok) {
-          lastError = new Error(`Gateway returned HTTP ${res.status}`);
-          continue;
-        }
+      const res = await fetch(url, { headers });
 
-        const html = await res.text();
-        if (!html || !html.includes('tgme_widget_message')) {
-          lastError = new Error('Gateway response did not contain channel widget');
-          continue;
-        }
-
-        return parseChannelHtml(html, cleanUsername);
-      } catch (err) {
-        lastError = err;
+      if (!res.ok) {
+        lastError = new Error(`HTTP ${res.status}`);
+        continue;
       }
+
+      const bodyText = await res.text();
+
+      // If it's the standard t.me/s/ HTML preview:
+      if (bodyText.includes('tgme_widget_message')) {
+        return parseChannelHtml(bodyText, cleanUsername);
+      }
+
+      // If it's the RSS fallback mirror (e.g. tg.i-c-a.su):
+      if (bodyText.includes('<rss') || bodyText.includes('<feed')) {
+        return parseChannelRssFallback(bodyText, cleanUsername);
+      }
+    } catch (err) {
+      lastError = err;
     }
   }
 
   throw new Error(`Failed to fetch public channel @${cleanUsername}: ${lastError ? lastError.message : 'Channel not found or empty'}`);
+}
+
+/**
+ * Fallback parser when Telegram web preview blocks Serverless edge IP with 403
+ */
+function parseChannelRssFallback(xml, cleanUsername) {
+  const titleMatch = xml.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/i);
+  const channelTitle = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : cleanUsername;
+
+  const descMatch = xml.match(/<description>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/i);
+  const channelDescription = descMatch ? descMatch[1].trim() : '';
+
+  const itemRegex = /<item>([\s\S]*?)<\/item>/gi;
+  const posts = [];
+  let match;
+
+  while ((match = itemRegex.exec(xml)) !== null) {
+    const itemXml = match[1];
+
+    const linkMatch = itemXml.match(/<link>([^<]+)<\/link>/i) || itemXml.match(/<guid[^>]*>([^<]+)<\/guid>/i);
+    const link = linkMatch ? linkMatch[1].trim() : '';
+
+    const idMatch = link.match(/\/(\d+)$/);
+    const postId = idMatch ? parseInt(idMatch[1], 10) : 0;
+    if (!postId) continue;
+
+    const descMatch = itemXml.match(/<description>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/i);
+    const rawDesc = descMatch ? descMatch[1] : '';
+    const cleanText = cleanWidgetTextHtml(rawDesc);
+    const plainText = cleanText.replace(/<[^>]+>/g, '').trim();
+
+    // Extract photos from enclosure or media:content or img src
+    const photos = [];
+    const imgRegex = /<img[^>]+src=["']([^"']+)["']/gi;
+    let m;
+    while ((m = imgRegex.exec(rawDesc)) !== null) {
+      if (!photos.includes(m[1])) photos.push(m[1]);
+    }
+    const mediaRegex = /<media:content[^>]+url=["']([^"']+)["'][^>]*type=["']image\//gi;
+    while ((m = mediaRegex.exec(itemXml)) !== null) {
+      if (!photos.includes(m[1])) photos.push(m[1]);
+    }
+
+    const pubDateMatch = itemXml.match(/<pubDate>([^<]+)<\/pubDate>/i);
+    const pubDate = pubDateMatch ? new Date(pubDateMatch[1]) : new Date();
+
+    posts.push({
+      id: postId,
+      guid: `tg_${cleanUsername.toLowerCase()}_${postId}`,
+      url: link || `https://t.me/${cleanUsername}/${postId}`,
+      channel: cleanUsername,
+      channelTitle,
+      textHtml: cleanText,
+      plainText,
+      photos,
+      photoUrl: photos[0] || null,
+      hasVideo: false,
+      pubDate,
+      forwardedFrom: null,
+    });
+  }
+
+  posts.sort((a, b) => a.id - b.id);
+
+  return {
+    channelUsername: cleanUsername,
+    channelTitle,
+    channelDescription,
+    channelUrl: `https://t.me/s/${cleanUsername}`,
+    posts,
+  };
 }
 
 

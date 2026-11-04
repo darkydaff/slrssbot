@@ -60,9 +60,36 @@ npx tgcloud webhook
 
 ## ⏰ Automated Background Polling
 
-Telegram Serverless executes on-demand when updates or API calls arrive. Continuous automatic polling runs via the built-in runner:
+Telegram Serverless executes on-demand when updates or API calls arrive. You can trigger continuous automatic polling in the cloud using **Cloudflare Workers Cron Triggers** (recommended) or locally:
 
-### 1. Systemd User Timer (Enabled & Active)
+### 1. Cloudflare Workers Cron Trigger (Recommended — Cloud & Free)
+GitHub Actions scheduled workflows suffer from 15–60 minute delays and auto-disable on repo inactivity. Instead, deploy the lightweight Cloudflare Worker in `cloudflare/worker.js` (configured via `wrangler.toml` to run every 5 minutes on Cloudflare's edge):
+
+```bash
+# 1. Authenticate with Cloudflare (one-time)
+npx wrangler login
+
+# 2. Deploy the Cloudflare Worker & Cron Trigger
+npm run cf:deploy
+
+# 3. Store your Telegram Serverless CLI token (app<id>:<secret>) as an encrypted Worker secret
+npm run cf:secret
+
+# (Optional) Set a custom secret for manual HTTP POST /poll triggers
+npx wrangler secret put POLL_SECRET
+
+# View live cron execution logs from Cloudflare's edge
+npm run cf:tail
+```
+
+You can also test the scheduled handler locally:
+```bash
+npm run cf:dev
+# Then in another terminal:
+curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"
+```
+
+### 2. Systemd User Timer (Local Linux)
 Installed and running via `systemd --user` every 5 minutes:
 ```bash
 # View timer status & next scheduled run
@@ -72,16 +99,16 @@ systemctl --user list-timers rsstg-poller.timer
 journalctl --user -u rsstg-poller.service -f
 ```
 
-### 2. Standalone Background Daemon
+### 3. Standalone Background Daemon
 Run directly or under tmux / screen:
 ```bash
 npm run poll:daemon              # Default 5-minute interval
 npm run poll:daemon -- --interval=10 # Custom 10-minute interval
 ```
 
-### 3. Crontab Alternative
+### 4. Crontab Alternative
 ```text
-*/5 * * * * cd /home/darkydaff/git/rsstg && npm run poll >> /tmp/rsstg-poll.log 2>&1
+*/5 * * * * cd /home/darkydaff/git/slrssbot && npm run poll >> /tmp/rsstg-poll.log 2>&1
 ```
 
 

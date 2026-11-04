@@ -11,6 +11,10 @@
     "run": "tgcloud run",
     "poll": "tgcloud run endpoints/poll '{}'",
     "poll:daemon": "node scripts/poll_runner.js",
+    "cf:deploy": "npx wrangler deploy",
+    "cf:dev": "npx wrangler dev --test-scheduled",
+    "cf:tail": "npx wrangler tail",
+    "cf:secret": "npx wrangler secret put TGCLOUD_TOKEN",
     "test": "node --test"
   }
 }

@@ -88,7 +88,10 @@ export function sanitizeToTelegramHtml(html) {
   // Match any tag that is not one of our allowed list:
   text = text.replace(/<\/?(?!(\/?(b|i|u|s|code|pre|blockquote|a|tg-spoiler)\b))[^>]+>/gi, '');
 
-  // 6. Decode unnecessary entities while preserving valid tags
+  // 6. Strip empty inline tags (e.g. <a href="..."></a>, <b></b>, <i></i>)
+  text = text.replace(/<(b|i|u|s|code|pre|blockquote|a|tg-spoiler)\b[^>]*>\s*<\/\1>/gi, '');
+
+  // 7. Decode unnecessary entities while preserving valid tags
   // Replace multiple sequential newlines with double newline
   text = text.replace(/\n{3,}/g, '\n\n').trim();
 

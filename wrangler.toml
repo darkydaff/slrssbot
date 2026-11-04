@@ -1,0 +1,17 @@
+name = "slrssbot-poller"
+main = "cloudflare/worker.js"
+compatibility_date = "2025-01-01"
+
+# Run the poll trigger every 5 minutes on Cloudflare's edge
+[triggers]
+crons = ["*/5 * * * *"]
+
+# Enable Cloudflare Workers Logs / Observability in the dashboard
+[observability]
+enabled = true
+
+# Secrets (set via CLI, never commit raw tokens):
+#   npx wrangler secret put TGCLOUD_TOKEN
+# Optional secret for manual HTTP POST /poll trigger:
+#   npx wrangler secret put POLL_SECRET
+
