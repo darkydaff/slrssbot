@@ -60,8 +60,9 @@ async function tgCloudRequest(baseUrl, appId, token, method, path, body, fetchIm
   try {
     data = JSON.parse(rawText);
   } catch {
+    const preview = (rawText || '').slice(0, 300).trim();
     throw new Error(
-      `Telegram Cloud returned non-JSON response (HTTP ${res.status}) for ${method} ${path}`
+      `Telegram Cloud returned non-JSON response (HTTP ${res.status}) for ${method} ${path}: ${preview || '(empty body)'}`
     );
   }
 
@@ -117,45 +118,59 @@ export async function triggerTelegramCloudPoll(env, fetchImpl = fetch) {
     );
   }
 
-  const runData = await tgCloudRequest(
-    baseUrl,
-    appId,
-    token,
-    'POST',
-    '/run',
-    {
-      module: TARGET_MODULE,
-      sources,
-      args: {},
-      ctx: {},
-    },
-    fetchImpl
-  );
+  let lastErr = null;
+  // Retry up to 2 times on transient Telegram Cloud 5xx or gateway errors
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const runData = await tgCloudRequest(
+        baseUrl,
+        appId,
+        token,
+        'POST',
+        '/run',
+        {
+          module: TARGET_MODULE,
+          sources,
+          args: {},
+          ctx: {},
+        },
+        fetchImpl
+      );
 
-  // Forward server-side console logs to Cloudflare Worker logs
-  if (Array.isArray(runData?.log)) {
-    for (const entry of runData.log) {
-      const msg = entry.M ?? entry.m ?? '';
-      const origin =
-        typeof entry.o === 'string'
-          ? entry.o
-          : entry.o?.m
-            ? `${entry.o.m}:${entry.o.l ?? ''}`
-            : '';
-      const prefix = origin ? `[${origin}] ` : '';
-      if (entry._ === 'err') console.error(`${prefix}${msg}`);
-      else if (entry._ === 'wrn') console.warn(`${prefix}${msg}`);
-      else console.log(`${prefix}${msg}`);
+      // Forward server-side console logs to Cloudflare Worker logs
+      if (Array.isArray(runData?.log)) {
+        for (const entry of runData.log) {
+          const msg = entry.M ?? entry.m ?? '';
+          const origin =
+            typeof entry.o === 'string'
+              ? entry.o
+              : entry.o?.m
+                ? `${entry.o.m}:${entry.o.l ?? ''}`
+                : '';
+          const prefix = origin ? `[${origin}] ` : '';
+          if (entry._ === 'err') console.error(`${prefix}${msg}`);
+          else if (entry._ === 'wrn') console.warn(`${prefix}${msg}`);
+          else console.log(`${prefix}${msg}`);
+        }
+      }
+
+      return {
+        ok: true,
+        appId,
+        revision,
+        executionTimeMs: runData?.time != null ? Math.round(runData.time * 1000) : null,
+        pollResult: runData?.result ?? null,
+      };
+    } catch (err) {
+      lastErr = err;
+      if (attempt < 2) {
+        console.warn(`[poll] POST /run attempt ${attempt} failed (${err.message}), retrying in 2s...`);
+        await new Promise((r) => setTimeout(r, 2000));
+      }
     }
   }
 
-  return {
-    ok: true,
-    appId,
-    revision,
-    executionTimeMs: runData?.time != null ? Math.round(runData.time * 1000) : null,
-    pollResult: runData?.result ?? null,
-  };
+  throw lastErr;
 }
 
 /**
