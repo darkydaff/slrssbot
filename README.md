@@ -1,141 +1,128 @@
-# RSS to Telegram Serverless Bot (`slrssbot`)
+# slrssbot
 
-A complete rewrite of [Rongronggg9/RSS-to-Telegram-Bot](https://github.com/Rongronggg9/RSS-to-Telegram-Bot) in modern JavaScript, natively hosted on **[Telegram Serverless](https://core.telegram.org/bots/serverless)** (`tgcloud`).
+RSS to Telegram Serverless Bot. Hosted on Telegram Serverless (`tgcloud`) with automated scheduling via Cloudflare Workers.
 
----
+## Overview
 
-## 🚀 Features
+`slrssbot` delivers syndication updates (RSS, Atom, JSON Feed, and public Telegram channels) to Telegram users, groups, and channels without requiring dedicated server infrastructure.
 
-- **Native Telegram Serverless Architecture:** Runs on Telegram's high-speed isolated V8 infrastructure. No VPS, Docker, or external servers to maintain.
-- **Built-in Cloud SQLite Database:** Persistent subscriptions, feed caching, and entry deduplication managed with `sdk/db`.
-- **Feed Standards Supported:** RSS 0.9x/1.0/2.0, Atom 1.0, and JSON Feed.
-- **Native Public Telegram Channel Polling:** Follow public Telegram channels (`/sub @channel` or `/sub https://t.me/channel`) directly with native Telegram post formatting (no third-party RSS mirrors, no duplicated fake titles, preserves forward headers and rich formatting).
-- **Rich Message Formatting:** Cleans arbitrary web HTML into Telegram-compliant HTML tags, formats links, and embeds images.
-- **OPML Import / Export:** Bulk export subscriptions to `.opml` or upload any `.opml` file to import feeds automatically.
-- **Deduplication & Conditional Requests:** Uses HTTP ETags, `If-Modified-Since`, and unique entry GUID tracking to minimize network overhead and eliminate duplicate notifications.
-- **Interactive Controls:** Inline keyboard buttons for list navigation and quick unsubscribe actions.
+- **Execution Environment:** Telegram Serverless (V8 isolate platform)
+- **Database:** Persistent Cloud SQLite (`sdk/db`)
+- **Scheduler:** Cloudflare Workers Cron Trigger (`wrangler`)
+- **Protocol Support:** RSS 0.9x / 1.0 / 2.0, Atom 1.0, JSON Feed 1.x, Telegram Channel Web / RSS Mirrored feeds
 
----
+## Specification & Standards Conformance
 
-## 💬 Bot Commands
-
-| Command | Description |
+| Standard / Interface | Implementation |
 | :--- | :--- |
-| `/start` | Welcome overview and quick start guide |
-| `/help` | Detailed command list and formatting syntax |
-| `/sub <url>` | Subscribe to an RSS, Atom, or JSON feed |
-| `/unsub [url]` | Unsubscribe from a feed (or display interactive buttons) |
-| `/list` | List active subscriptions with inline action buttons |
-| `/poll` | Trigger an immediate manual check of all feeds for updates |
-| `/export` | Export all subscriptions to an OPML file |
-| *Upload `.opml`* | Send an OPML document to the bot to batch import all feeds |
+| **RSS 2.0** | `tgcloud/lib/rss.js` (XML parser, enclosures, guid, pubDate) |
+| **Atom 1.0** (RFC 4287) | `tgcloud/lib/rss.js` (`feed`, `entry`, `link[rel=alternate]`) |
+| **JSON Feed 1.1** | `tgcloud/lib/rss.js` (JSON specification compliant) |
+| **OPML 2.0** | `tgcloud/lib/opml.js` (Import and export) |
+| **HTTP/1.1 Conditional Requests** (RFC 7232) | `ETag`, `If-None-Match`, `If-Modified-Since` cache validation |
+| **Telegram Bot API HTML** | `tgcloud/lib/formatter.js` (Sanitization to supported tags only) |
 
----
+## Command Reference
 
-## 🛠️ CLI & Deployment (`tgcloud`)
+| Command | Arguments | Description |
+| :--- | :--- | :--- |
+| `/start` | None | Initialize bot session and display usage |
+| `/help` | None | Display available commands and filter syntax |
+| `/sub` | `<url>` or `@channel` | Subscribe current chat to feed or channel |
+| `/unsub` | `[url]` | Unsubscribe from feed or launch interactive list |
+| `/list` | None | List active subscriptions with inline keyboard controls |
+| `/poll` | None | Trigger immediate check for new entries |
+| `/export` | None | Export all active subscriptions as an OPML document |
+| `/set` | `<setting> <val>` | Configure delivery mode (`default`, `link_only`, `photo`) |
 
-Managed via `@tgcloud/cli`:
+Sending an `.opml` or `.xml` file to the bot automatically imports subscriptions.
 
-```bash
-# Check status relative to Telegram Cloud
-npm run status
+## Architecture
 
-# Deploy updated modules to Telegram Serverless
-npm run deploy
-
-# Run unit tests locally
-npm test
-
-# Run manual poll cycle
-npm run poll
-
-# Start continuous background polling daemon
-npm run poll:daemon
-
-# Inspect bot webhook configuration
-npx tgcloud webhook
+```
+slrssbot/
+├── cloudflare/
+│   └── worker.js             # Cloudflare Worker cron trigger & HTTP proxy
+├── docs/
+│   └── tgcloud-sdk.md        # Telegram Serverless SDK reference
+├── scripts/
+│   ├── poll_runner.js        # Node.js background poller runner
+│   └── systemd/              # Linux systemd user service & timer units
+├── test/                     # Node.js test suite
+├── tgcloud/
+│   ├── schema.js             # SQLite DDL (subscriptions, states, deduplication)
+│   ├── endpoints/
+│   │   └── poll.js           # Management API invocation endpoint
+│   ├── handlers/
+│   │   ├── message.js        # Bot API message update handler
+│   │   └── callback_query.js # Bot API callback query handler
+│   └── lib/
+│       ├── feed_finder.js    # Web discovery for auto-locating feeds
+│       ├── formatter.js      # Telegram HTML sanitizer & template compiler
+│       ├── opml.js           # OPML import/export parser
+│       ├── poller.js         # Differential engine and broadcast pipeline
+│       ├── rss.js            # RSS/Atom/JSON feed parser
+│       ├── telegram_channel.js # Public channel fetcher & parser
+│       └── telegraph.js      # Telegraph API publisher
+├── package.json
+├── tgcloud.jsonc
+└── wrangler.toml             # Cloudflare Workers configuration
 ```
 
----
+## Deployment & Operations
 
-## ⏰ Automated Background Polling
+### 1. Telegram Serverless Deployment
 
-Telegram Serverless executes on-demand when updates or API calls arrive. You can trigger continuous automatic polling in the cloud using **Cloudflare Workers Cron Triggers** (recommended) or locally:
-
-### 1. Cloudflare Workers Cron Trigger (Recommended — Cloud & Free)
-GitHub Actions scheduled workflows suffer from 15–60 minute delays and auto-disable on repo inactivity. Instead, deploy the lightweight Cloudflare Worker in `cloudflare/worker.js` (configured via `wrangler.toml` to run every 5 minutes on Cloudflare's edge):
+Prerequisites: Node.js >= 18, `@tgcloud/cli`.
 
 ```bash
-# 1. Authenticate with Cloudflare (one-time)
+# Verify local module state against cloud revision
+npm run status
+
+# Push modules to Telegram Serverless
+npm run deploy
+
+# Apply database migrations when tgcloud/schema.js changes
+npx tgcloud migrate
+
+# Run poll endpoint directly
+npm run poll
+```
+
+### 2. Cloudflare Edge Scheduling (Recommended)
+
+Scheduled execution runs on Cloudflare Workers edge runtime every 5 minutes (`*/5 * * * *`).
+
+```bash
+# Authenticate with Cloudflare
 npx wrangler login
 
-# 2. Deploy the Cloudflare Worker & Cron Trigger
+# Deploy worker and cron trigger
 npm run cf:deploy
 
-# 3. Store your Telegram Serverless CLI token (app<id>:<secret>) as an encrypted Worker secret
+# Configure Telegram Serverless access token
 npm run cf:secret
+# Enter token format: app<id>:<secret>
 
-# (Optional) Set a custom secret for manual HTTP POST /poll triggers
-npx wrangler secret put POLL_SECRET
-
-# View live cron execution logs from Cloudflare's edge
+# Tail live worker execution logs
 npm run cf:tail
 ```
 
-You can also test the scheduled handler locally:
-```bash
-npm run cf:dev
-# Then in another terminal:
-curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"
-```
+### 3. Alternative Local Polling
 
-### 2. Systemd User Timer (Local Linux)
-Installed and running via `systemd --user` every 5 minutes:
+For self-hosted Linux environments:
+
 ```bash
-# View timer status & next scheduled run
+# Systemd user timer (runs every 5 minutes)
 systemctl --user list-timers rsstg-poller.timer
 
-# View live delivery logs
-journalctl --user -u rsstg-poller.service -f
+# Background daemon runner
+npm run poll:daemon -- --interval=5
 ```
 
-### 3. Standalone Background Daemon
-Run directly or under tmux / screen:
+## Verification & Testing
+
 ```bash
-npm run poll:daemon              # Default 5-minute interval
-npm run poll:daemon -- --interval=10 # Custom 10-minute interval
+# Execute unit test suite
+npm test
 ```
-
-### 4. Crontab Alternative
-```text
-*/5 * * * * cd /home/darkydaff/git/slrssbot && npm run poll >> /tmp/rsstg-poll.log 2>&1
-```
-
-
----
-
-## 📂 Project Structure
-
-```text
-rsstg/
-├── docs/
-│   └── tgcloud-sdk.md       # Official Telegram Serverless SDK reference
-├── test/
-│   └── rss.test.js          # Unit tests (feed parser, sanitizer, OPML)
-├── tgcloud/
-│   ├── schema.js            # SQLite tables (subscriptions, feed_states, feed_entries)
-│   ├── handlers/
-│   │   ├── message.js       # Commands (/start, /sub, /unsub, /list, /poll, /export, OPML)
-│   │   └── callback_query.js# Interactive buttons & callbacks
-│   ├── endpoints/
-│   │   └── poll.js          # Scheduled poll endpoint
-│   └── lib/
-│       ├── telegram_channel.js # Direct public Telegram channel fetcher & parser
-│       ├── rss.js           # Pure JS RSS/Atom/JSON feed parser
-│       ├── formatter.js     # Telegram HTML sanitizer & post builder
-│       ├── opml.js          # OPML import and export generator
-│       └── poller.js        # Feed differential engine & broadcaster
-├── package.json
-└── tgcloud.jsonc
-```
-
