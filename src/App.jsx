@@ -24,6 +24,7 @@ export function App() {
 
   // Reader state
   const [currentArticle, setCurrentArticle] = useState(null);
+  const [loadingArticleContent, setLoadingArticleContent] = useState(false);
 
   // Modals state
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -204,17 +205,89 @@ export function App() {
 
   // Open Article in Reader View
   const handleOpenArticle = async (articlePreview) => {
-    // Optimistically open preview and mark as read
-    setCurrentArticle(articlePreview);
-    handleToggleRead(articlePreview.id, true);
+    // 1. Optimistically mark as read in local state and update unread count
+    setArticles((prev) =>
+      prev.map((a) => (a.id === articlePreview.id ? { ...a, isRead: true } : a))
+    );
+    if (!articlePreview.isRead) {
+      setStats((prev) => ({
+        ...prev,
+        totalUnread: Math.max(0, prev.totalUnread - 1),
+      }));
+    }
 
+    // 2. Check if we already have substantive content in local state
+    const hasFullContent = Boolean(articlePreview.content && articlePreview.content.length >= 500);
+
+    setCurrentArticle({
+      ...articlePreview,
+      isRead: true,
+      isLoadingContent: !hasFullContent,
+      loadError: null,
+    });
+    setLoadingArticleContent(!hasFullContent);
+
+    // 3. Request full article from backend (marks read in DB, fetches fresh Telegraph URL & on-demand extraction)
     try {
       const data = await callApi('get_article', { articleId: articlePreview.id });
       if (data?.article) {
-        setCurrentArticle(data.article);
+        setCurrentArticle((prev) => {
+          if (!prev || prev.id !== articlePreview.id) return prev;
+          return {
+            ...data.article,
+            isRead: true,
+            isLoadingContent: false,
+            loadError: null,
+          };
+        });
       }
     } catch (err) {
       console.warn('[handleOpenArticle] error:', err.message);
+      setCurrentArticle((prev) => {
+        if (!prev || prev.id !== articlePreview.id) return prev;
+        return {
+          ...prev,
+          isLoadingContent: false,
+          loadError: err.message || 'Failed to load full article',
+        };
+      });
+    } finally {
+      setLoadingArticleContent(false);
+    }
+  };
+
+  // Explicit Retry for full article loading without app reload
+  const handleRetryLoadArticle = async (articleId) => {
+    const targetId = articleId || currentArticle?.id;
+    if (!targetId) return;
+
+    setLoadingArticleContent(true);
+    setCurrentArticle((prev) => prev ? { ...prev, isLoadingContent: true, loadError: null } : prev);
+
+    try {
+      const data = await callApi('get_article', { articleId: targetId });
+      if (data?.article) {
+        setCurrentArticle((prev) => {
+          if (!prev || prev.id !== targetId) return prev;
+          return {
+            ...data.article,
+            isLoadingContent: false,
+            loadError: null,
+          };
+        });
+      }
+    } catch (err) {
+      console.warn('[handleRetryLoadArticle] error:', err.message);
+      setCurrentArticle((prev) => {
+        if (!prev || prev.id !== targetId) return prev;
+        return {
+          ...prev,
+          isLoadingContent: false,
+          loadError: err.message || 'Failed to load full article',
+        };
+      });
+    } finally {
+      setLoadingArticleContent(false);
     }
   };
 
@@ -276,6 +349,8 @@ export function App() {
           onToggleRead={handleToggleRead}
           onNextArticle={handleNextArticle}
           hasNextArticle={hasNextArticle}
+          isLoadingContent={loadingArticleContent || Boolean(currentArticle?.isLoadingContent)}
+          onRetryLoadContent={() => handleRetryLoadArticle(currentArticle?.id)}
         />
       ) : (
         /* 2. Main Feed Stream Mode */

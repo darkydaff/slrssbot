@@ -199,10 +199,13 @@ export function extractArticleFromHtml(html, pageUrl) {
   cleanHtml = cleanHtml.replace(/<div\b[^>]*class=["'][^"']*(?:advertisement|ad-container|ad_container|ad-wrapper|dfp-ad|widget_text|social-share|related-posts|comments|comment-section|newsletter-signup|cookie-banner|author-card|author-box|author-profile|author-bio|post-author|article-author)[^"']*["'][^>]*>[\s\S]*?<\/div>/gi, '');
 
   // 4. Locate article container using balanced tag matching (prevents premature closure at nested <div>s)
+  const isTelegraph = Boolean(pageUrl && (pageUrl.includes('telegra.ph') || pageUrl.includes('tephra.io')));
+  const minTextLength = isTelegraph ? 50 : 300;
+
   const containerOpenTags = [
     // Standard CMS post containers (e.g. WordPress, Ghost, Substack, Medium, Telegraph, The Verge, Ars Technica)
-    /<(div)\b[^>]*class=["'][^"']*(?:post-content|entry-content|\bentry\b|post-entry|post-body|entry-body|article-content|article__content|article__body|story-body|article-body|c-entry-content|gh-content|available-content|body__content|article-inner|tl_article_content)[^"']*["'][^>]*>/i,
-    /<(div)\b[^>]*id=["'](?:_tl_article_content|article-body|post-content)["'][^>]*>/i,
+    /<(div|article)\b[^>]*class=["'][^"']*(?:post-content|entry-content|\bentry\b|post-entry|post-body|entry-body|article-content|article__content|article__body|story-body|article-body|c-entry-content|gh-content|available-content|body__content|article-inner|tl_article_content)[^"']*["'][^>]*>/i,
+    /<(div|article)\b[^>]*id=["'](?:_tl_editor|_tl_article_content|article-body|post-content)["'][^>]*>/i,
     // HTML5 article tag
     /<(article)\b[^>]*>/i,
     // Schema.org articleBody
@@ -216,7 +219,7 @@ export function extractArticleFromHtml(html, pageUrl) {
     const extracted = extractBalancedTag(cleanHtml, pattern);
     if (extracted) {
       const textOnly = extracted.replace(/<[^>]+>/g, '').trim();
-      if (textOnly.length > 300) {
+      if (textOnly.length >= minTextLength) {
         rawContent = extracted;
         break;
       }
@@ -279,17 +282,45 @@ export async function fetchAndExtractArticle(url, opts = {}) {
       'Accept-Language': 'en-US,en;q=0.9',
     };
 
-    const res = await fetch(url, { headers });
+    let res = null;
+    try {
+      res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+    } catch (fetchErr) {
+      // If bare apex domain failed network/DNS, attempt with www. prefix
+      if (!url.includes('://www.')) {
+        try {
+          const u = new URL(url);
+          u.hostname = `www.${u.hostname}`;
+          res = await fetch(u.toString(), { headers, signal: AbortSignal.timeout(8000) });
+        } catch {}
+      }
+      if (!res) {
+        console.warn('[fetchAndExtractArticle] fetch error:', url, fetchErr?.message);
+        return null;
+      }
+    }
+
     if (!res.ok) {
-      console.log('[fetchAndExtractArticle] fetch failed:', url, res.status, res.statusText);
-      return null;
+      if (!url.includes('://www.')) {
+        try {
+          const u = new URL(url);
+          u.hostname = `www.${u.hostname}`;
+          const wwwRes = await fetch(u.toString(), { headers, signal: AbortSignal.timeout(8000) });
+          if (wwwRes.ok) {
+            res = wwwRes;
+          }
+        } catch {}
+      }
+      if (!res.ok) {
+        console.warn('[fetchAndExtractArticle] fetch failed:', url, res.status, res.statusText);
+        return null;
+      }
     }
 
     const htmlText = await res.text();
-    console.log('[fetchAndExtractArticle] url:', url, 'status:', res.status, 'htmlText length:', htmlText.length, 'preview:', htmlText.slice(0, 200).replace(/\s+/g, ' '));
     return extractArticleFromHtml(htmlText, url);
   } catch (err) {
-    console.log('[fetchAndExtractArticle] error:', err?.message || err);
+    console.warn('[fetchAndExtractArticle] error:', err?.message || err);
     return null;
   }
 }

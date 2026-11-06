@@ -21,29 +21,31 @@ export default async function (input, ctx) {
     throw new EndpointError('Article not found', { code: 'NOT_FOUND' });
   }
 
-  // Auto-mark article as read
-  const existingState = await db.select()
-    .from(userArticleStates)
-    .where(and(eq(userArticleStates.userId, userId), eq(userArticleStates.entryId, articleId)))
-    .get();
+  // Auto-mark article as read safely without race condition crashes
+  try {
+    const existingState = await db.select()
+      .from(userArticleStates)
+      .where(and(eq(userArticleStates.userId, userId), eq(userArticleStates.entryId, articleId)))
+      .get();
 
-  const isStarred = Boolean(existingState?.isStarred);
-
-  if (existingState) {
-    if (!existingState.isRead) {
-      await db.update(userArticleStates)
-        .set({ isRead: true, readAt: new Date() })
-        .where(eq(userArticleStates.id, existingState.id))
-        .run();
+    if (existingState) {
+      if (!existingState.isRead) {
+        await db.update(userArticleStates)
+          .set({ isRead: true, readAt: new Date() })
+          .where(eq(userArticleStates.id, existingState.id))
+          .run();
+      }
+    } else {
+      await db.insert(userArticleStates).values({
+        userId,
+        entryId: articleId,
+        isRead: true,
+        isStarred: false,
+        readAt: new Date(),
+      }).onConflictDoNothing().run();
     }
-  } else {
-    await db.insert(userArticleStates).values({
-      userId,
-      entryId: articleId,
-      isRead: true,
-      isStarred: false,
-      readAt: new Date(),
-    }).run();
+  } catch (err) {
+    console.warn('[get_article] auto-mark read error:', err?.message);
   }
 
   // Get feed info
@@ -144,23 +146,29 @@ export default async function (input, ctx) {
     return isNaN(d.getTime()) ? null : d.toISOString();
   };
 
+  // Get up-to-date star state
+  const finalState = await db.select()
+    .from(userArticleStates)
+    .where(and(eq(userArticleStates.userId, userId), eq(userArticleStates.entryId, articleId)))
+    .get();
+
   return {
     article: {
       id: article.id,
       feedUrl: article.feedUrl,
       feedTitle,
-      title: decodeEntities(article.title || 'Untitled'),
+      title: decodeEntities(rawTitle || 'Untitled'),
       link: article.link || '',
-      author: decodeEntities(article.author || feedTitle),
+      author: decodeEntities(rawAuthor || feedTitle),
       summary: decodeEntities(article.summary || ''),
       content: cleanContent,
-      leadImageUrl: article.leadImageUrl || null,
+      leadImageUrl: rawLeadImg || null,
       media: article.media || [],
       telegraphUrl: article.telegraphUrl || null,
       publishedAt: normalizeTimestamp(article.publishedAt),
       createdAt: normalizeTimestamp(article.createdAt),
       isRead: true,
-      isStarred,
+      isStarred: Boolean(finalState?.isStarred),
     },
   };
 }

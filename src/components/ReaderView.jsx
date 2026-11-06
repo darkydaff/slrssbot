@@ -27,6 +27,8 @@ export function ReaderView({
   onToggleRead,
   onNextArticle,
   hasNextArticle = false,
+  isLoadingContent = false,
+  onRetryLoadContent,
 }) {
   const { t, lang } = useI18n();
 
@@ -214,6 +216,32 @@ export function ReaderView({
             __html: article.content || article.summary || `<p>${t('no_content_preview')}</p>`,
           }}
         />
+
+        {/* Loading Indicator */}
+        {isLoadingContent && (
+          <div className="my-6 p-4 rounded-xl bg-tg-secondary/70 border border-tg-border flex items-center justify-center gap-2.5 animate-pulse text-xs text-tg-hint font-medium">
+            <div className="w-3.5 h-3.5 border-2 border-tg-button border-t-transparent rounded-full animate-spin" />
+            <span>{t('loading_full_article')}</span>
+          </div>
+        )}
+
+        {/* Load Error with Retry */}
+        {article.loadError && !isLoadingContent && (
+          <div className="my-6 p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-center space-y-2">
+            <p className="text-xs text-red-500 font-medium">
+              {t('full_article_failed')}
+            </p>
+            {onRetryLoadContent && (
+              <button
+                type="button"
+                onClick={onRetryLoadContent}
+                className="px-4 py-1.5 rounded-lg bg-tg-secondary text-tg-text text-xs font-semibold hover:bg-tg-border active:scale-95 transition-all inline-flex items-center gap-1.5"
+              >
+                <span>{t('retry')}</span>
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Footer Link to Origin */}
         {article.link && (

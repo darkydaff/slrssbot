@@ -180,4 +180,54 @@ test('forcePollFeed prioritizes stored entries without making network requests',
   assert.equal(typeof res.sentCount, 'number');
 });
 
+test('podcast iframe embeds and audio elements are preserved in article content', async () => {
+  const { cleanArticleContent } = await import('../tgcloud/lib/formatter.js');
+  const rawHtml = `
+    <div class="outpost-pub-container" data-btn-allmembers></div>
+    <p>Inside Proton's AI reckoning, the AO3 outage, and why we're not tech support.</p>
+    <iframe frameborder="0" height="200" scrolling="no" src="https://playlist.megaphone.fm?e=TBIEA5425280144" width="100%"></iframe>
+    <figure class="kg-card kg-embed-card"><iframe width="200" height="113" src="https://www.youtube.com/embed/YDzS0Vtoe5s?feature=oembed" frameborder="0"></iframe></figure>
+    <audio controls src="https://traffic.megaphone.fm/podcast.mp3"></audio>
+    <div class="sharedaddy sd-sharing-enabled"></div>
+  `;
+  const cleaned = cleanArticleContent(rawHtml);
+  // Promotional wrappers stripped
+  assert.ok(!cleaned.includes('outpost-pub-container'));
+  assert.ok(!cleaned.includes('sharedaddy'));
+  // Podcast and video embeds preserved
+  assert.ok(cleaned.includes('playlist.megaphone.fm?e=TBIEA5425280144'));
+  assert.ok(cleaned.includes('youtube.com/embed/YDzS0Vtoe5s'));
+  assert.ok(cleaned.includes('traffic.megaphone.fm/podcast.mp3'));
+});
+
+test('user_article_states handles concurrent marking without unique constraint crash', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE user_article_states (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      entry_id INTEGER NOT NULL,
+      is_read INTEGER DEFAULT 0,
+      is_starred INTEGER DEFAULT 0,
+      read_at INTEGER,
+      starred_at INTEGER
+    );
+    CREATE UNIQUE INDEX uidx_user_article_states ON user_article_states (user_id, entry_id);
+  `);
+
+  const insertSql = `INSERT INTO user_article_states (user_id, entry_id, is_read, is_starred) VALUES (?, ?, 1, 0) ON CONFLICT DO NOTHING;`;
+  const stmt = db.prepare(insertSql);
+
+  // Simultaneous calls to mark read for the same article
+  assert.doesNotThrow(() => {
+    stmt.run(12345, 999);
+    stmt.run(12345, 999); // Concurrent duplicate
+  });
+
+  const count = db.prepare('SELECT count(*) as count FROM user_article_states WHERE user_id = 12345 AND entry_id = 999').get().count;
+  assert.equal(count, 1);
+});
+
+
 

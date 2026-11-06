@@ -561,7 +561,17 @@ export async function pollSingleFeed(feedUrl) {
             try {
               const telContent = await fetchAndExtractArticle(telegraphUrl);
               if (telContent?.contentHtml && telContent.contentHtml.length > 500) {
-                itemContent = telContent.contentHtml;
+                // Preserve podcast players, audio tags, and media iframes that Telegraph cannot host
+                const mediaEmbeds = (itemContent || articleBody).match(/<iframe\b[^>]*src=["'][^"']*(?:megaphone|transistor|spotify|simplecast|podbean|buzzsprout|libsyn|anchor\.fm|youtube|vimeo)[^"']*["'][^>]*>[\s\S]*?<\/iframe>|<audio\b[\s\S]*?<\/audio>/gi);
+                let enrichedHtml = telContent.contentHtml;
+                if (mediaEmbeds) {
+                  for (const embed of mediaEmbeds) {
+                    if (!enrichedHtml.includes(embed)) {
+                      enrichedHtml = embed + '\n' + enrichedHtml;
+                    }
+                  }
+                }
+                itemContent = enrichedHtml;
               }
             } catch {}
           }

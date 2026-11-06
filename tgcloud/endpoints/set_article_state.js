@@ -43,7 +43,7 @@ export default async function (input, ctx) {
           isRead: true,
           isStarred: false,
           readAt: new Date(),
-        }).run();
+        }).onConflictDoNothing().run();
       }
     }
 
@@ -79,14 +79,24 @@ export default async function (input, ctx) {
         .run();
     }
   } else {
-    await db.insert(userArticleStates).values({
-      userId,
-      entryId: articleId,
-      isRead: Boolean(input?.isRead),
-      isStarred: Boolean(input?.isStarred),
-      readAt: input?.isRead ? new Date() : null,
-      starredAt: input?.isStarred ? new Date() : null,
-    }).run();
+    try {
+      await db.insert(userArticleStates).values({
+        userId,
+        entryId: articleId,
+        isRead: Boolean(input?.isRead),
+        isStarred: Boolean(input?.isStarred),
+        readAt: input?.isRead ? new Date() : null,
+        starredAt: input?.isStarred ? new Date() : null,
+      }).onConflictDoNothing().run();
+    } catch {
+      // In case another concurrent query already inserted it, update state
+      if (Object.keys(updateFields).length > 0) {
+        await db.update(userArticleStates)
+          .set(updateFields)
+          .where(and(eq(userArticleStates.userId, userId), eq(userArticleStates.entryId, articleId)))
+          .run();
+      }
+    }
   }
 
   return { success: true };

@@ -61,7 +61,7 @@ export function cleanArticleContent(html) {
   res = res.replace(/<div\b[^>]*class=["'][^"']*first-edition-gate["'][^>]*>[\s\S]*?<\/div>/gi, '');
 
   // 3. Remove promotional footers, affiliate disclaimers, and tracking widgets
-  res = res.replace(/<div\b[^>]*class=["'][^"']*(?:visitor-promo|ad-disclaimer-container|google-preferred-source-badge|outpost-pub-container|sharedaddy|jp-relatedposts|likes-widget-placeholder|jetpack-likes-widget-wrapper)[\"'][^>]*>[\s\S]*?<\/div>/gi, '');
+  res = res.replace(/<div\b[^>]*class=["'][^"']*(?:visitor-promo|ad-disclaimer-container|google-preferred-source-badge|outpost-pub-container|sharedaddy|jp-relatedposts|likes-widget-placeholder|jetpack-likes-widget-wrapper)[^"']*["'][^>]*>[\s\S]*?<\/div>/gi, '');
   res = res.replace(/<div\b[^>]*id=["'](?:after_disclaimer_placement|atatags-[^\"']*)[\"'][^>]*>[\s\S]*?<\/div>/gi, '');
 
   return res.trim();

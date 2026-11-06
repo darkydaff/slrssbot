@@ -65,6 +65,22 @@ body {
   margin-bottom: 1.25rem;
 }
 
+.article-prose iframe {
+  width: 100%;
+  max-width: 100%;
+  border-radius: 0.75rem;
+  margin-top: 1.25rem;
+  margin-bottom: 1.25rem;
+  border: 1px solid var(--tg-theme-border, #e5e7eb);
+  background-color: var(--tg-theme-secondary-bg-color, #f9fafb);
+}
+
+.article-prose audio {
+  width: 100%;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+}
+
 .article-prose blockquote {
   border-left: 4px solid var(--tg-theme-button-color, #3b82f6);
   padding-left: 1rem;
