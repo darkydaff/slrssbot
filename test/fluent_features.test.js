@@ -134,3 +134,35 @@ test('poll endpoint rejects calls from Mini App client and accepts cloud/cli exe
   assert.equal(cliRes.ok, true);
 });
 
+test('get_feeds returns feeds with totalCount and unreadCount when subscriptions exist', async () => {
+  const { db } = await import('sdk');
+  const originalSelect = db.select;
+  const originalAll = db.all;
+
+  try {
+    db.select = () => ({
+      from: () => ({
+        where: () => ({
+          all: async () => [
+            { id: 1, feedUrl: 'https://example.com/rss', customTitle: 'Test Feed', category: 'Tech', sendMode: 'default', paused: false },
+          ],
+          get: async () => ({ folders: ['Tech'] }),
+        }),
+        all: async () => [],
+      }),
+    });
+    db.all = async () => [
+      { feed_url: 'https://example.com/rss', total_count: 10, read_count: 2 },
+    ];
+
+    const res = await getFeeds({}, { initData: { user: { id: 777 } } });
+    assert.equal(res.feeds.length, 1);
+    assert.equal(res.feeds[0].totalCount, 10);
+    assert.equal(res.feeds[0].unreadCount, 8);
+    assert.equal(res.stats.totalFeeds, 1);
+  } finally {
+    db.select = originalSelect;
+    db.all = originalAll;
+  }
+});
+

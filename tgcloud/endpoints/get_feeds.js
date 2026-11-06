@@ -75,6 +75,7 @@ export default async function (input, ctx) {
   for (const sub of userSubs) {
     const state = stateMap.get(sub.feedUrl);
     const counts = countMap.get(sub.feedUrl) || { total: 0, read: 0 };
+    const totalCount = counts.total;
     const unreadCount = Math.max(0, counts.total - counts.read);
     totalUnread += unreadCount;
 
