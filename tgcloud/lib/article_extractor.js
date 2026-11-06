@@ -180,9 +180,29 @@ export function extractArticleFromHtml(html, pageUrl) {
   const ogImageMatch = html.match(/<meta property=["']og:image["'] content=["']([^"']+)["']/i);
   const leadImage = ogImageMatch ? decodeEntities(resolveUrl(ogImageMatch[1], pageUrl)) : null;
 
-  const authorMeta = html.match(/<meta\s+name=["']author["']\s+content=["']([^"']+)["']/i) ||
-                     html.match(/<meta\s+property=["']article:author["']\s+content=["']([^"']+)["']/i);
+  const authorMeta = html.match(/<meta\s+name=["'](?:author|parsely-author|sailthru\.author|dc\.creator)["']\s+content=["']([^"']+)["']/i) ||
+                     html.match(/<meta\s+property=["'](?:article:author|og:author)["']\s+content=["']([^"']+)["']/i);
   let author = authorMeta ? decodeEntities(authorMeta[1].trim()) : '';
+
+  if (!author) {
+    // Check JSON-LD schema author
+    const jsonLdAuthor = html.match(/"author"\s*:\s*(?:{\s*"@type"\s*:\s*"Person"\s*,\s*"name"\s*:\s*"([^"]+)"|\[\s*{\s*"@type"\s*:\s*"Person"\s*,\s*"name"\s*:\s*"([^"]+)")/i) ||
+                         html.match(/"author"\s*:\s*"([^"]+)"/i);
+    if (jsonLdAuthor) {
+      author = decodeEntities((jsonLdAuthor[1] || jsonLdAuthor[2] || '').trim());
+    }
+  }
+
+  if (!author) {
+    // Check <a rel="author"> or <a href="/author/...">
+    const authorLink = html.match(/<a\b[^>]*?(?:rel=["']author["']|href=["'][^"']*\/(?:author|by)\/[^"']*["'])[^>]*>([\s\S]*?)<\/a>/i);
+    if (authorLink) {
+      const parsed = authorLink[1].replace(/<[^>]+>/g, '').trim();
+      if (parsed && parsed.length < 50 && !/^(photo|image|read|more|view)/i.test(parsed)) {
+        author = decodeEntities(parsed);
+      }
+    }
+  }
 
   if (!author) {
     const authorSpan = html.match(/<(?:span|a|div)\b[^>]*class=["'][^"']*(?:author-name|author__name|byline|author)[^"']*["'][^>]*>([\s\S]*?)<\/(?:span|a|div)>/i);
@@ -218,12 +238,13 @@ export function extractArticleFromHtml(html, pageUrl) {
 
   const containerOpenTags = [
     // Standard CMS post containers (e.g. WordPress, Ghost, Substack, Medium, Telegraph, The Verge, Ars Technica)
-    /<(div|article)\b[^>]*class=["'][^"']*(?:post-content|entry-content|\bentry\b|post-entry|post-body|entry-body|article-content|article__content|article__body|story-body|article-body|c-entry-content|gh-content|available-content|body__content|article-inner|tl_article_content)[^"']*["'][^>]*>/i,
-    /<(div|article)\b[^>]*id=["'](?:_tl_editor|_tl_article_content|article-body|post-content)["'][^>]*>/i,
+    /<(div|article|section)\b[^>]*class=["'][^"']*(?:post-content|entry-content|\bentry\b|post-entry|post-body|entry-body|article-content|article__content|article__body|story-body|article-body|c-entry-content|gh-content|available-content|body__content|article-inner|tl_article_content|wp-block-post-content|storytext|article__text|article-text|post-full-content|e-content|markdown-body|c-article__body)[^"']*["'][^>]*>/i,
+    /<(div|article|section)\b[^>]*id=["'](?:_tl_editor|_tl_article_content|article-body|post-content|storytext|main-content|story-body)[^>]*>/i,
+    /<(div|article|section)\b[^>]*data-(?:testid|component|field)=["'](?:BodyWrapper|text-block|body)["'][^>]*>/i,
     // HTML5 article tag
     /<(article)\b[^>]*>/i,
     // Schema.org articleBody
-    /<(div)\b[^>]*itemprop=["']articleBody["'][^>]*>/i,
+    /<(div|article|section)\b[^>]*itemprop=["']articleBody["'][^>]*>/i,
     // Main content wrapper
     /<(main)\b[^>]*>/i,
   ];
