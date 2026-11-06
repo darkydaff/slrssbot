@@ -85,3 +85,35 @@ export const botConfig = table('bot_config', {
   value: text('value').notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
 });
+
+// 7. Daily Aggregated Metrics & Network Traffic
+export const botDailyStats = table('bot_daily_stats', {
+  date: text('date').primaryKey(), // 'YYYY-MM-DD' (UTC)
+  activeUsers: integer('active_users').default(0),
+  newUsers: integer('new_users').default(0),
+  articlesFetched: integer('articles_fetched').default(0),
+  articlesDelivered: integer('articles_delivered').default(0),
+  telegraphCreated: integer('telegraph_created').default(0),
+  feedBytes: integer('feed_bytes').default(0),           // Inbound RSS/Atom bytes
+  telegraphBytes: integer('telegraph_bytes').default(0), // Telegraph API bytes (in + out)
+  extractorBytes: integer('extractor_bytes').default(0), // Web scraping / full article bytes
+  cacheBytesSaved: integer('cache_bytes_saved').default(0), // Bandwidth saved via 304 Not Modified
+  pollCount: integer('poll_count').default(0),
+  pollErrors: integer('poll_errors').default(0),
+  commandsCount: integer('commands_count').default(0),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+});
+
+// 8. Per-User Activity Tracking (DAU, WAU, MAU)
+export const userActivity = table('user_activity', {
+  userId: integer('user_id').primaryKey(),
+  chatType: text('chat_type').default('private'), // 'private', 'channel', 'group'
+  firstSeenAt: integer('first_seen_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  lastActiveAt: integer('last_active_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  interactionsCount: integer('interactions_count').default(1),
+  lastCommand: text('last_command'),
+}, (t) => ({
+  lastActiveIdx: index('idx_user_activity_last_active').on(t.lastActiveAt),
+  firstSeenIdx: index('idx_user_activity_first_seen').on(t.firstSeenAt),
+}));
+

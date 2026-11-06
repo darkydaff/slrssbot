@@ -6,6 +6,7 @@
 
 import { fetch } from 'sdk';
 import { decodeEntities } from './telegraph.js';
+import { recordTraffic } from './metrics.js';
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 (compatible; TelegramRSSBot/2.0)';
 
@@ -471,6 +472,9 @@ export async function fetchAndExtractArticle(url, opts = {}) {
     let extracted = null;
     if (res && res.ok) {
       const htmlText = await res.text();
+      const bytesIn = (typeof Buffer !== 'undefined' ? Buffer.byteLength(htmlText, 'utf8') : htmlText.length) + 200;
+      recordTraffic({ category: 'extractor', bytesIn, bytesOut: 300 }).catch(() => {});
+
       const isChallenge =
         /<title\b[^>]*>(?:Checking your browser|Just a moment|Attention Required|Security Check|Bot Verification)<\/title>/i.test(htmlText) ||
         htmlText.includes('__challenge/challenge.js') ||

@@ -9,6 +9,7 @@
 import { fetch } from 'sdk';
 import { botConfig } from '../schema.js';
 import { eq } from 'sdk/db';
+import { recordTraffic } from './metrics.js';
 
 const TELEGRAPH_ENDPOINTS = [
   'https://slrssbot-poller.darkydaff.workers.dev/telegraph',
@@ -23,18 +24,25 @@ const TELEGRAPH_ENDPOINTS = [
  */
 async function telegraphRequest(method, payload) {
   let lastError = null;
+  const jsonBody = JSON.stringify(payload);
+  const bytesOut = (typeof Buffer !== 'undefined' ? Buffer.byteLength(jsonBody, 'utf8') : jsonBody.length) + 200;
+
   for (const endpoint of TELEGRAPH_ENDPOINTS) {
     try {
       const res = await fetch(`${endpoint}/${method}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: jsonBody,
       });
       if (!res.ok) {
         lastError = new Error(`HTTP ${res.status}`);
         continue;
       }
-      const data = await res.json();
+      const rawText = await res.text();
+      const bytesIn = (typeof Buffer !== 'undefined' ? Buffer.byteLength(rawText, 'utf8') : rawText.length) + 200;
+      recordTraffic({ category: 'telegraph', bytesIn, bytesOut }).catch(() => {});
+
+      const data = JSON.parse(rawText);
       if (!data.ok) {
         lastError = new Error(data.error || 'Telegraph API error');
         continue;

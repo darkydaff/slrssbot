@@ -5,6 +5,7 @@ import { ArticleList } from './components/ArticleList.jsx';
 import { ReaderView } from './components/ReaderView.jsx';
 import { FeedManagerModal } from './components/FeedManagerModal.jsx';
 import { SettingsModal } from './components/SettingsModal.jsx';
+import { AdminStatsModal } from './components/AdminStatsModal.jsx';
 import { callApi } from './lib/api.js';
 import { initTelegramApp, hapticFeedback } from './lib/telegram.js';
 
@@ -44,6 +45,13 @@ export function App() {
   const [isManageModalOpen, setIsManageModalOpen] = useState(false);
   const [manageModalTab, setManageModalTab] = useState('feeds');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isAdminStatsOpen, setIsAdminStatsOpen] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get('admin') === '1';
+    } catch {
+      return false;
+    }
+  });
 
   const handleOpenManageModal = (tab = 'feeds') => {
     setManageModalTab(tab);
@@ -499,6 +507,13 @@ export function App() {
         stats={stats}
         apiKey={apiKey}
         onFeedsUpdated={fetchFeeds}
+        onOpenAdminStats={() => setIsAdminStatsOpen(true)}
+      />
+
+      {/* 5. Creator / Admin Analytics Dashboard Modal */}
+      <AdminStatsModal
+        isOpen={isAdminStatsOpen}
+        onClose={() => setIsAdminStatsOpen(false)}
       />
     </div>
   );

@@ -30,6 +30,26 @@ export function eq(a, b) {
   return { op: '=', a, b };
 }
 
+export function ne(a, b) {
+  return { op: '!=', a, b };
+}
+
+export function gt(a, b) {
+  return { op: '>', a, b };
+}
+
+export function gte(a, b) {
+  return { op: '>=', a, b };
+}
+
+export function lt(a, b) {
+  return { op: '<', a, b };
+}
+
+export function lte(a, b) {
+  return { op: '<=', a, b };
+}
+
 export function and(...conditions) {
   return { op: 'AND', conditions };
 }

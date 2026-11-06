@@ -16,6 +16,13 @@ import { pollSingleFeed, pollAllFeeds, forcePollFeed } from '../lib/poller.js';
 import { escapeHtml, extractCleanSummary } from '../lib/formatter.js';
 import { t, getChatLanguage, SUPPORTED_LANGUAGES, normalizeLanguageCode, registerAllBotCommands } from '../lib/i18n.js';
 import { MINI_APP_URL } from '../lib/config.js';
+import { isAdmin } from '../lib/admin.js';
+import { recordUserActivity, getAdminStats, getAdminStatsCompact } from '../lib/metrics.js';
+import {
+  getAdminStatsWidgetHtml,
+  formatAdminStatsTextSummary,
+  formatAdminStatsRichHtml,
+} from '../lib/widgets/admin_stats_widget.js';
 
 export default async function (message, ctx) {
   if (!message || !message.chat) return;
@@ -23,6 +30,15 @@ export default async function (message, ctx) {
   const chatId = message.chat.id;
   const fromId = message.from?.id;
   const text = (message.text || '').trim();
+
+  // Track user activity for DAU / WAU / MAU
+  if (fromId) {
+    recordUserActivity({
+      userId: fromId,
+      chatType: message.chat.type,
+      command: text.startsWith('/') ? text.split(/\s+/)[0].toLowerCase() : null,
+    }).catch(() => {});
+  }
 
   // 1. Handle OPML document upload
   if (message.document) {
@@ -98,6 +114,12 @@ export default async function (message, ctx) {
           },
         });
       }
+      break;
+
+    case '/stats':
+    case '/admin':
+    case '/admin_stats':
+      await handleAdminStats(message);
       break;
 
     default:
@@ -842,6 +864,96 @@ async function handleOpmlUpload(message, doc) {
       chat_id: chatId,
       message_id: statusMsg.message_id,
       text: `❌ <b>Failed to process OPML file:</b>\n${escapeHtml(err.message)}`,
+      parse_mode: 'HTML',
+    });
+  }
+}
+
+/**
+ * Handle /stats or /admin command for bot administrators.
+ * Generates and delivers the interactive Telegram widget-sandbox mini-HTML dashboard,
+ * with automatic fallback to rich HTML card if sendWidget is not supported by API server.
+ */
+async function handleAdminStats(message) {
+  const chatId = message.chat.id;
+  const fromId = message.from?.id;
+
+  const userIsAdmin = await isAdmin(fromId);
+  if (!userIsAdmin) {
+    if (message.chat.type === 'private') {
+      await api.sendMessage({
+        chat_id: chatId,
+        text: `⚠️ <b>Access Denied:</b> This command is restricted to the bot administrator.`,
+        parse_mode: 'HTML',
+      });
+    }
+    return;
+  }
+
+  const statusMsg = await api.sendMessage({
+    chat_id: chatId,
+    text: `⏳ <i>Compiling admin analytics and live metrics...</i>`,
+    parse_mode: 'HTML',
+  });
+
+  try {
+    const stats = await getAdminStats();
+    const compactData = await getAdminStatsCompact(stats);
+    const widgetHtml = getAdminStatsWidgetHtml();
+    const captionText = formatAdminStatsTextSummary(stats);
+
+    const replyMarkup = {
+      inline_keyboard: [
+        [
+          { text: '🔄 Refresh', callback_data: 'admin_stats_refresh' },
+          { text: '⚡ Poll Now', callback_data: 'admin_stats_poll' },
+        ],
+        [
+          { text: '📊 Open Web Dashboard', web_app: { url: `${MINI_APP_URL}?admin=1` } },
+        ],
+      ],
+    };
+
+    let sentViaWidget = false;
+
+    // 1. Try sending as interactive Telegram mini-HTML widget (widget-sandbox)
+    if (typeof api.sendWidget === 'function') {
+      try {
+        await api.sendWidget({
+          chat_id: chatId,
+          html: widgetHtml,
+          width: 360,
+          height: 520,
+          allow_queries: true,
+          is_shared: false,
+          public_data: JSON.stringify(compactData),
+          caption: captionText,
+          reply_markup: replyMarkup,
+        });
+        sentViaWidget = true;
+        // Delete temporary status message
+        await api.deleteMessage({ chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+      } catch (widgetErr) {
+        console.warn('[handleAdminStats] api.sendWidget fallback:', widgetErr?.message);
+      }
+    }
+
+    // 2. Fallback to rich HTML message if sendWidget is not supported yet by current Bot API instance
+    if (!sentViaWidget) {
+      await api.editMessageText({
+        chat_id: chatId,
+        message_id: statusMsg.message_id,
+        text: formatAdminStatsRichHtml(stats),
+        parse_mode: 'HTML',
+        reply_markup: replyMarkup,
+      });
+    }
+  } catch (err) {
+    console.error('[handleAdminStats] error:', err);
+    await api.editMessageText({
+      chat_id: chatId,
+      message_id: statusMsg.message_id,
+      text: `❌ <b>Failed to load admin stats:</b>\n${escapeHtml(err.message)}`,
       parse_mode: 'HTML',
     });
   }

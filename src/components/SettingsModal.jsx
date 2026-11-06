@@ -16,6 +16,7 @@ import {
   Check,
   RefreshCw,
   FolderSync,
+  ShieldCheck,
 } from 'lucide-react';
 import { getTelegramUser, openExternalLink, hapticFeedback } from '../lib/telegram.js';
 import { useI18n } from '../lib/i18n.js';
@@ -27,6 +28,7 @@ export function SettingsModal({
   stats = { totalFeeds: 0, totalUnread: 0, totalStarred: 0 },
   apiKey: initialApiKey = null,
   onFeedsUpdated,
+  onOpenAdminStats,
 }) {
   if (!isOpen) return null;
 
@@ -271,6 +273,27 @@ export function SettingsModal({
               ))}
             </select>
           </div>
+
+          {/* Admin Dashboard Entry */}
+          {onOpenAdminStats && (
+            <button
+              type="button"
+              onClick={() => {
+                hapticFeedback('medium');
+                onClose();
+                onOpenAdminStats();
+              }}
+              className="w-full flex items-center justify-between p-3.5 rounded-xl bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 border border-blue-500/20 text-xs font-semibold transition-all text-left"
+            >
+              <div className="flex items-center gap-2.5">
+                <ShieldCheck className="w-4 h-4 text-blue-500" />
+                <span>Admin Stats & Operations</span>
+              </div>
+              <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-500">
+                Creator
+              </span>
+            </button>
+          )}
 
           {/* OPML & Data Management */}
           <div className="p-3.5 rounded-xl bg-tg-secondary border border-tg-border space-y-3">

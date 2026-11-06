@@ -11,6 +11,7 @@ import { getChatLanguage } from './i18n.js';
 import { createTelegraphPage, editTelegraphPage } from './telegraph.js';
 import { isTeaserContent, fetchAndExtractArticle } from './article_extractor.js';
 import { parseUrl } from './feed_finder.js';
+import { recordTraffic, recordPollCycle } from './metrics.js';
 import {
   isTelegramChannelUrl,
   extractChannelUsername,
@@ -406,6 +407,7 @@ export async function pollSingleFeed(feedUrl) {
 
     // 304 Not Modified: no new content
     if (res.status === 304) {
+      recordTraffic({ category: 'feed', bytesIn: 250, bytesOut: 250, savedBytes: 45000 }).catch(() => {});
       await db.update(feedStates)
         .set({ lastCheckedAt: new Date(), errorCount: 0, lastError: null })
         .where(eq(feedStates.feedUrl, feedUrl))
@@ -415,6 +417,7 @@ export async function pollSingleFeed(feedUrl) {
 
     if (!res.ok) {
       const errorMsg = `HTTP ${res.status}: ${res.statusText}`;
+      recordTraffic({ category: 'feed', bytesIn: 300, bytesOut: 300 }).catch(() => {});
       await db.update(feedStates)
         .set({
           lastCheckedAt: new Date(),
@@ -427,6 +430,8 @@ export async function pollSingleFeed(feedUrl) {
     }
 
     const rawText = await res.text();
+    const bytesIn = (typeof Buffer !== 'undefined' ? Buffer.byteLength(rawText, 'utf8') : rawText.length) + 300;
+    recordTraffic({ category: 'feed', bytesIn, bytesOut: 300 }).catch(() => {});
     const parsedFeed = parseFeed(rawText);
 
     const etag = res.headers.get('etag');
@@ -744,6 +749,14 @@ export async function pollAllFeeds() {
       }
     }
   }
+
+  const totalNewArticles = results.reduce((sum, r) => sum + (r?.newItemsCount || 0), 0);
+  const totalErrors = results.reduce((sum, r) => sum + (r?.error ? 1 : 0), 0);
+  recordPollCycle({
+    feedCount: activeSubs.length,
+    newArticles: totalNewArticles,
+    errorCount: totalErrors,
+  }).catch(() => {});
 
   return results;
 }

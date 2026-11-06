@@ -7,6 +7,10 @@ import { eq } from 'sdk/db';
 import { subscriptions, chatSettings } from '../schema.js';
 import { t, getChatLanguage, SUPPORTED_LANGUAGES, normalizeLanguageCode } from '../lib/i18n.js';
 import { MINI_APP_URL } from '../lib/config.js';
+import { isAdmin } from '../lib/admin.js';
+import { recordUserActivity, getAdminStats, getAdminStatsCompact } from '../lib/metrics.js';
+import { formatAdminStatsRichHtml } from '../lib/widgets/admin_stats_widget.js';
+import { pollAllFeeds } from '../lib/poller.js';
 
 export default async function (callbackQuery, ctx) {
   if (!callbackQuery || !callbackQuery.data) return;
@@ -15,7 +19,116 @@ export default async function (callbackQuery, ctx) {
   const queryId = callbackQuery.id;
   const message = callbackQuery.message;
   const chatId = message?.chat?.id;
+  const fromId = callbackQuery.from?.id;
   const fromLang = callbackQuery.from?.language_code;
+
+  if (fromId) {
+    recordUserActivity({
+      userId: fromId,
+      chatType: message?.chat?.type,
+      command: 'callback',
+    }).catch(() => {});
+  }
+
+  // 0. Admin stats refresh and poll actions
+  if (data === 'admin_stats_refresh') {
+    const userIsAdmin = await isAdmin(fromId);
+    if (!userIsAdmin) {
+      await api.answerCallbackQuery({
+        callback_query_id: queryId,
+        text: '⚠️ Restricted to administrator.',
+        show_alert: true,
+      });
+      return;
+    }
+
+    try {
+      const stats = await getAdminStats();
+      const compactData = await getAdminStatsCompact(stats);
+
+      if (typeof api.editMessageWidgetData === 'function') {
+        try {
+          await api.editMessageWidgetData({
+            chat_id: chatId,
+            message_id: message.message_id,
+            public_data: JSON.stringify(compactData),
+          });
+        } catch {}
+      }
+
+      if (message) {
+        try {
+          await api.editMessageText({
+            chat_id: chatId,
+            message_id: message.message_id,
+            text: formatAdminStatsRichHtml(stats),
+            parse_mode: 'HTML',
+            reply_markup: message.reply_markup,
+          });
+        } catch {}
+      }
+
+      await api.answerCallbackQuery({
+        callback_query_id: queryId,
+        text: '✅ Statistics updated live!',
+      });
+    } catch (err) {
+      await api.answerCallbackQuery({
+        callback_query_id: queryId,
+        text: `Error: ${err.message}`,
+        show_alert: true,
+      });
+    }
+    return;
+  }
+
+  if (data === 'admin_stats_poll') {
+    const userIsAdmin = await isAdmin(fromId);
+    if (!userIsAdmin) {
+      await api.answerCallbackQuery({
+        callback_query_id: queryId,
+        text: '⚠️ Restricted to administrator.',
+        show_alert: true,
+      });
+      return;
+    }
+
+    await api.answerCallbackQuery({
+      callback_query_id: queryId,
+      text: '⚡ Polling feeds across all sources...',
+    });
+
+    try {
+      await pollAllFeeds();
+      const stats = await getAdminStats();
+      const compactData = await getAdminStatsCompact(stats);
+
+      if (typeof api.editMessageWidgetData === 'function') {
+        try {
+          await api.editMessageWidgetData({
+            chat_id: chatId,
+            message_id: message.message_id,
+            public_data: JSON.stringify(compactData),
+          });
+        } catch {}
+      }
+
+      if (message) {
+        try {
+          await api.editMessageText({
+            chat_id: chatId,
+            message_id: message.message_id,
+            text: formatAdminStatsRichHtml(stats),
+            parse_mode: 'HTML',
+            reply_markup: message.reply_markup,
+          });
+        } catch {}
+      }
+    } catch (err) {
+      console.warn('[admin_stats_poll] callback poll error:', err.message);
+    }
+    return;
+  }
 
   // 1. Language switcher callback
   if (data === 'show_lang') {
