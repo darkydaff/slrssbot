@@ -6,6 +6,10 @@ compatibility_date = "2025-01-01"
 [triggers]
 crons = ["*/5 * * * *"]
 
+# Smart Placement
+[placement]
+mode = "smart"
+
 # Cloudflare Workers Observability (Logs & Tracing)
 [observability]
 enabled = true
@@ -23,7 +27,7 @@ enabled = true
 head_sampling_rate = 1
 persist = true
 
-[observability.issue_detection]
+[observability.issues]
 enabled = false
 
 # Secrets (set via CLI, never commit raw tokens):
