@@ -15,7 +15,7 @@
  *  - pt: Português (Portuguese)
  *  - id: Bahasa Indonesia (Indonesian)
  *
- * Note: Russian ('ru') is explicitly excluded and normalized to 'en'.
+ * Note: Russian ('ru') is normalized to Ukrainian ('uk').
  */
 
 import { db } from 'sdk';

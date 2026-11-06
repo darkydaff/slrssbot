@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import worker, {
   parseTgCloudToken,
   triggerTelegramCloudPoll,
+  isAllowedProxyUrl,
 } from '../cloudflare/worker.js';
 
 describe('Cloudflare Worker Poller', () => {
@@ -89,6 +90,29 @@ describe('Cloudflare Worker Poller', () => {
       {}
     );
     assert.equal(unauthRes.status, 401);
+  });
+
+  it('validates proxy URLs and blocks SSRF / loopback probes in media proxy', async () => {
+    assert.equal(isAllowedProxyUrl('https://example.com/image.jpg'), true);
+    assert.equal(isAllowedProxyUrl('http://cdn.site.org/media/audio.mp3'), true);
+
+    // Block private/loopback/metadata URLs
+    assert.equal(isAllowedProxyUrl('http://127.0.0.1/admin'), false);
+    assert.equal(isAllowedProxyUrl('http://localhost:3000'), false);
+    assert.equal(isAllowedProxyUrl('http://169.254.169.254/latest/meta-data'), false);
+    assert.equal(isAllowedProxyUrl('http://10.0.0.1/internal'), false);
+    assert.equal(isAllowedProxyUrl('http://192.168.1.1/router'), false);
+    assert.equal(isAllowedProxyUrl('file:///etc/passwd'), false);
+    assert.equal(isAllowedProxyUrl('javascript:alert(1)'), false);
+
+    // HTTP endpoint test
+    const blockedReq = new Request('https://slrssbot-poller.example.workers.dev/image-proxy?url=http://127.0.0.1/evil');
+    const blockedRes = await worker.fetch(blockedReq, {}, {});
+    assert.equal(blockedRes.status, 400);
+
+    const missingReq = new Request('https://slrssbot-poller.example.workers.dev/image-proxy');
+    const missingRes = await worker.fetch(missingReq, {}, {});
+    assert.equal(missingRes.status, 400);
   });
 });
 

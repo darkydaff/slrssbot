@@ -6,6 +6,7 @@ import greaderEndpoint from '../tgcloud/endpoints/greader.js';
 import backupEndpoint from '../tgcloud/endpoints/backup.js';
 import manageFeed from '../tgcloud/endpoints/manage_feed.js';
 import getFeeds from '../tgcloud/endpoints/get_feeds.js';
+import pollEndpoint from '../tgcloud/endpoints/poll.js';
 
 test('OPML parser extracts nested folder categories', () => {
   const opmlWithCategories = `<?xml version="1.0" encoding="UTF-8"?>
@@ -119,5 +120,17 @@ test('Folder management actions create, rename, and delete custom folders', asyn
   assert.equal(deleteRes.success, true);
   assert.equal(deleteRes.deleted, 'Deep Tech');
   assert.ok(!deleteRes.folders.includes('Deep Tech'));
+});
+
+test('poll endpoint rejects calls from Mini App client and accepts cloud/cli execution', async () => {
+  // Reject Mini App client with initData.user
+  await assert.rejects(
+    async () => pollEndpoint({}, { initData: { user: { id: 1234 } } }),
+    (err) => err.parameters?.code === 'FORBIDDEN'
+  );
+
+  // Allow scheduled/cli calls with empty or non-client context
+  const cliRes = await pollEndpoint({}, {});
+  assert.equal(cliRes.ok, true);
 });
 

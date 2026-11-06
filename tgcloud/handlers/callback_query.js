@@ -6,6 +6,7 @@ import { api, db } from 'sdk';
 import { eq } from 'sdk/db';
 import { subscriptions, chatSettings } from '../schema.js';
 import { t, getChatLanguage, SUPPORTED_LANGUAGES, normalizeLanguageCode } from '../lib/i18n.js';
+import { MINI_APP_URL } from '../lib/config.js';
 
 export default async function (callbackQuery, ctx) {
   if (!callbackQuery || !callbackQuery.data) return;
@@ -98,7 +99,7 @@ ${t(lang, 'manage_help')}`;
         parse_mode: 'HTML',
         reply_markup: {
           inline_keyboard: [
-            [{ text: t(lang, 'btn_open_reader'), web_app: { url: 'https://app9057202653.tgcloud.ai' } }],
+            [{ text: t(lang, 'btn_open_reader'), web_app: { url: MINI_APP_URL } }],
             [
               { text: t(lang, 'btn_my_subs'), callback_data: 'set_list' },
               { text: t(lang, 'btn_language'), callback_data: 'show_lang' },

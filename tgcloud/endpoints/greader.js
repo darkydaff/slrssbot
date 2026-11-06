@@ -98,22 +98,36 @@ export default async function (input, ctx) {
     const unreadCounts = [];
     let totalUnread = 0;
 
+    // Batch-query total and read entry counts per feed in a single grouped SQL query
+    const countRows = await db.all(sql`
+      SELECT
+        fe.feed_url,
+        count(fe.id) AS total_count,
+        count(uas.id) AS read_count
+      FROM feed_entries fe
+      LEFT JOIN user_article_states uas
+        ON uas.entry_id = fe.id AND uas.user_id = ${userId} AND uas.is_read = 1
+      WHERE fe.feed_url IN (SELECT feed_url FROM subscriptions WHERE chat_id = ${userId})
+      GROUP BY fe.feed_url
+    `);
+    const countMap = new Map();
+    for (const r of countRows) {
+      countMap.set(r.feed_url, {
+        total: Number(r.total_count) || 0,
+        read: Number(r.read_count) || 0,
+      });
+    }
+
+    const nowUsec = String(Date.now() * 1000);
     for (const sub of userSubs) {
-      const totalRow = await db.get(
-        sql`SELECT count(*) as count FROM feed_entries WHERE feed_url = ${sub.feedUrl}`
-      );
-      const readRow = await db.get(
-        sql`SELECT count(*) as count FROM feed_entries fe
-            INNER JOIN user_article_states uas ON uas.entry_id = fe.id
-            WHERE fe.feed_url = ${sub.feedUrl} AND uas.user_id = ${userId} AND uas.is_read = 1`
-      );
-      const count = Math.max(0, (totalRow?.count || 0) - (readRow?.count || 0));
+      const counts = countMap.get(sub.feedUrl) || { total: 0, read: 0 };
+      const count = Math.max(0, counts.total - counts.read);
       totalUnread += count;
 
       unreadCounts.push({
         id: `feed/${sub.feedUrl}`,
         count,
-        newestItemTimestampUsec: String(Date.now() * 1000),
+        newestItemTimestampUsec: nowUsec,
       });
     }
 

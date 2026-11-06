@@ -14,7 +14,7 @@ import {
   Pencil,
   Rss,
 } from 'lucide-react';
-import { hapticFeedback } from '../lib/telegram.js';
+import { hapticFeedback, showTelegramConfirm, showTelegramAlert } from '../lib/telegram.js';
 import { useI18n } from '../lib/i18n.js';
 
 export function FeedManagerModal({
@@ -58,6 +58,11 @@ export function FeedManagerModal({
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [folderErrorMsg, setFolderErrorMsg] = useState('');
   const [folderSuccessMsg, setFolderSuccessMsg] = useState('');
+
+  // Inline folder rename state
+  const [editingFolder, setEditingFolder] = useState(null);
+  const [editingFolderName, setEditingFolderName] = useState('');
+  const [isRenamingFolder, setIsRenamingFolder] = useState(false);
 
   if (!isOpen) return null;
 
@@ -153,21 +158,31 @@ export function FeedManagerModal({
     }
   }
 
-  // 3. Handle Rename Folder
-  async function handleRenameFolderClick(oldName) {
-    if (oldName === 'General') return;
-    const newName = window.prompt(`Enter new name for folder "${oldName}":`, oldName);
-    if (!newName || !newName.trim() || newName.trim() === oldName) return;
+  // 3. Handle Rename Folder Save
+  async function handleSaveRenameFolder(oldName) {
+    const cleanNew = editingFolderName.trim();
+    if (!cleanNew || cleanNew === oldName) {
+      setEditingFolder(null);
+      return;
+    }
+    if (cleanNew.toLowerCase() === 'general') {
+      await showTelegramAlert('Cannot rename to "General".');
+      return;
+    }
 
-    hapticFeedback('light');
+    setIsRenamingFolder(true);
+    hapticFeedback('medium');
     try {
       if (onRenameFolder) {
-        await onRenameFolder(oldName, newName.trim());
+        await onRenameFolder(oldName, cleanNew);
       }
       hapticFeedback('success');
+      setEditingFolder(null);
     } catch (err) {
       hapticFeedback('error');
-      alert(`Could not rename folder: ${err.message}`);
+      await showTelegramAlert(`Could not rename folder: ${err.message}`);
+    } finally {
+      setIsRenamingFolder(false);
     }
   }
 
@@ -179,7 +194,8 @@ export function FeedManagerModal({
       ? `Delete folder "${folderName}"?\nIts ${count} feed(s) will be safely moved to "General".`
       : `Delete folder "${folderName}"?`;
 
-    if (!window.confirm(confirmText)) return;
+    const confirmed = await showTelegramConfirm(confirmText);
+    if (!confirmed) return;
 
     hapticFeedback('warning');
     try {
@@ -189,24 +205,15 @@ export function FeedManagerModal({
       hapticFeedback('success');
     } catch (err) {
       hapticFeedback('error');
-      alert(`Could not delete folder: ${err.message}`);
+      await showTelegramAlert(`Could not delete folder: ${err.message}`);
     }
   }
 
   // 5. Handle Feed Category Change via Dropdown
   async function handleFeedCategoryChange(feedUrl, newCat) {
     if (newCat === '__new__') {
-      const created = window.prompt('Create new folder and move feed to it:');
-      if (created && created.trim()) {
-        const cleanCreated = created.trim();
-        if (onCreateFolder) {
-          try {
-            await onCreateFolder(cleanCreated);
-          } catch {}
-        }
-        await onUpdateFeed({ feedUrl, category: cleanCreated });
-        hapticFeedback('success');
-      }
+      setActiveTab('folders');
+      hapticFeedback('light');
       return;
     }
 
@@ -216,6 +223,7 @@ export function FeedManagerModal({
       hapticFeedback('success');
     } catch (err) {
       hapticFeedback('error');
+      await showTelegramAlert(`Failed to change category: ${err.message}`);
     }
   }
 
@@ -482,49 +490,88 @@ export function FeedManagerModal({
                       key={catName}
                       className="flex items-center justify-between p-3 rounded-xl bg-tg-secondary/50 border border-tg-border"
                     >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <div className="p-2 rounded-lg bg-tg-secondary text-tg-button">
-                          <Folder className="w-4 h-4" />
+                      {editingFolder === catName ? (
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <input
+                            type="text"
+                            value={editingFolderName}
+                            onChange={(e) => setEditingFolderName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleSaveRenameFolder(catName);
+                              if (e.key === 'Escape') setEditingFolder(null);
+                            }}
+                            autoFocus
+                            placeholder="Folder name"
+                            className="flex-1 px-2.5 py-1 text-xs bg-tg-bg text-tg-text rounded-lg border border-tg-button focus:outline-hidden"
+                          />
+                          <button
+                            type="button"
+                            disabled={isRenamingFolder || !editingFolderName.trim()}
+                            onClick={() => handleSaveRenameFolder(catName)}
+                            className="p-1.5 rounded-lg bg-tg-button text-tg-button-text hover:opacity-90 disabled:opacity-40"
+                            title="Save"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingFolder(null)}
+                            className="p-1.5 rounded-lg text-tg-hint hover:text-tg-text hover:bg-tg-secondary"
+                            title="Cancel"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
                         </div>
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-bold text-tg-text truncate">
-                              {catName}
-                            </span>
-                            {isDefault && (
-                              <span className="px-1.5 py-0.2 rounded-sm bg-tg-secondary text-[10px] text-tg-hint font-semibold border border-tg-border">
-                                Default
+                      ) : (
+                        <>
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="p-2 rounded-lg bg-tg-secondary text-tg-button">
+                              <Folder className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-bold text-tg-text truncate">
+                                  {catName}
+                                </span>
+                                {isDefault && (
+                                  <span className="px-1.5 py-0.2 rounded-sm bg-tg-secondary text-[10px] text-tg-hint font-semibold border border-tg-border">
+                                    Default
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-[11px] text-tg-hint">
+                                {matchingFeeds.length} {matchingFeeds.length === 1 ? 'feed' : 'feeds'}
                               </span>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1">
+                            {!isDefault && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingFolder(catName);
+                                    setEditingFolderName(catName);
+                                  }}
+                                  title="Rename folder"
+                                  className="p-1.5 rounded-lg text-tg-hint hover:text-tg-text hover:bg-tg-secondary transition-all"
+                                >
+                                  <Pencil className="w-4 h-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteFolderClick(catName)}
+                                  title="Delete folder"
+                                  className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 transition-all"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </>
                             )}
                           </div>
-                          <span className="text-[11px] text-tg-hint">
-                            {matchingFeeds.length} {matchingFeeds.length === 1 ? 'feed' : 'feeds'}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-1">
-                        {!isDefault && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => handleRenameFolderClick(catName)}
-                              title="Rename folder"
-                              className="p-1.5 rounded-lg text-tg-hint hover:text-tg-text hover:bg-tg-secondary transition-all"
-                            >
-                              <Pencil className="w-4 h-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteFolderClick(catName)}
-                              title="Delete folder"
-                              className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 transition-all"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </>
-                        )}
-                      </div>
+                        </>
+                      )}
                     </div>
                   );
                 })}

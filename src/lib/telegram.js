@@ -130,3 +130,49 @@ export function getTelegramUser() {
   };
 }
 
+/**
+ * Show a native confirmation dialog via Telegram WebApp API with fallback to window.confirm
+ * @param {string} message
+ * @returns {Promise<boolean>}
+ */
+export function showTelegramConfirm(message) {
+  return new Promise((resolve) => {
+    if (tg?.showConfirm) {
+      try {
+        tg.showConfirm(message, (ok) => resolve(Boolean(ok)));
+        return;
+      } catch {
+        // Fallback below
+      }
+    }
+    if (typeof window !== 'undefined' && window.confirm) {
+      resolve(Boolean(window.confirm(message)));
+    } else {
+      resolve(true);
+    }
+  });
+}
+
+/**
+ * Show a native alert dialog via Telegram WebApp API with fallback to window.alert
+ * @param {string} message
+ * @returns {Promise<void>}
+ */
+export function showTelegramAlert(message) {
+  return new Promise((resolve) => {
+    if (tg?.showAlert) {
+      try {
+        tg.showAlert(message, () => resolve());
+        return;
+      } catch {
+        // Fallback below
+      }
+    }
+    if (typeof window !== 'undefined' && window.alert) {
+      window.alert(message);
+    }
+    resolve();
+  });
+}
+
+

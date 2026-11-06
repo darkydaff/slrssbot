@@ -15,6 +15,7 @@ import { parseOpml, generateOpml } from '../lib/opml.js';
 import { pollSingleFeed, pollAllFeeds, forcePollFeed } from '../lib/poller.js';
 import { escapeHtml, extractCleanSummary } from '../lib/formatter.js';
 import { t, getChatLanguage, SUPPORTED_LANGUAGES, normalizeLanguageCode, registerAllBotCommands } from '../lib/i18n.js';
+import { MINI_APP_URL } from '../lib/config.js';
 
 export default async function (message, ctx) {
   if (!message || !message.chat) return;
@@ -92,7 +93,7 @@ export default async function (message, ctx) {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              [{ text: t(lang, 'btn_open_reader'), web_app: { url: 'https://app9057202653.tgcloud.ai' } }],
+              [{ text: t(lang, 'btn_open_reader'), web_app: { url: MINI_APP_URL } }],
             ],
           },
         });
@@ -200,7 +201,7 @@ async function syncBotCommands() {
         menu_button: {
           type: 'web_app',
           text: '📖 Reader',
-          web_app: { url: 'https://app9057202653.tgcloud.ai' },
+          web_app: { url: MINI_APP_URL },
         },
       });
     } catch {
@@ -249,7 +250,7 @@ ${t(lang, 'cmd_help')}`;
     parse_mode: 'HTML',
     reply_markup: {
       inline_keyboard: [
-        [{ text: t(lang, 'btn_open_reader'), web_app: { url: 'https://app9057202653.tgcloud.ai' } }],
+        [{ text: t(lang, 'btn_open_reader'), web_app: { url: MINI_APP_URL } }],
         [
           { text: t(lang, 'btn_my_subs'), callback_data: 'set_list' },
           { text: t(lang, 'btn_language'), callback_data: 'show_lang' },
@@ -282,7 +283,7 @@ ${t(lang, 'manage_help')}`;
     parse_mode: 'HTML',
     reply_markup: {
       inline_keyboard: [
-        [{ text: t(lang, 'btn_open_reader'), web_app: { url: 'https://app9057202653.tgcloud.ai' } }],
+        [{ text: t(lang, 'btn_open_reader'), web_app: { url: MINI_APP_URL } }],
         [
           { text: t(lang, 'btn_my_subs'), callback_data: 'set_list' },
           { text: t(lang, 'btn_language'), callback_data: 'show_lang' },

@@ -23,6 +23,47 @@ let cachedSources = null;
 let cachedRevision = null;
 
 /**
+ * Validate that a proxy target URL is safe:
+ * - Only public HTTP/HTTPS
+ * - Disallow loopback, link-local, private IPv4/IPv6, and internal hostnames
+ */
+export function isAllowedProxyUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return false;
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return false;
+    }
+    const host = parsed.hostname.toLowerCase();
+    if (
+      host === 'localhost' ||
+      host.endsWith('.local') ||
+      host.endsWith('.internal') ||
+      host.endsWith('.lan')
+    ) {
+      return false;
+    }
+    // Block loopback, private IPv4 ranges, link-local (169.254.x.x / cloud metadata)
+    if (
+      /^127\.\d+\.\d+\.\d+$/.test(host) ||
+      /^10\.\d+\.\d+\.\d+$/.test(host) ||
+      /^172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+$/.test(host) ||
+      /^192\.168\.\d+\.\d+$/.test(host) ||
+      /^169\.254\.\d+\.\d+$/.test(host) ||
+      host === '0.0.0.0' ||
+      host === '[::1]' ||
+      host.startsWith('fc00:') ||
+      host.startsWith('fe80:')
+    ) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Validate TGCLOUD_TOKEN and extract the public appId ("app<id>").
  */
 export function parseTgCloudToken(rawToken) {
@@ -271,6 +312,9 @@ export default {
     if (url.pathname.startsWith('/image-proxy') || url.pathname.startsWith('/media-proxy')) {
       const targetUrl = url.searchParams.get('url');
       if (!targetUrl) return new Response('Missing url query parameter', { status: 400 });
+      if (!isAllowedProxyUrl(targetUrl)) {
+        return new Response('Disallowed or invalid URL for media proxy', { status: 400 });
+      }
 
       try {
         const fetchHeaders = {

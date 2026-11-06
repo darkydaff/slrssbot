@@ -16,36 +16,24 @@ export default async function (input, ctx) {
       ? sql`fe.feed_url = ${String(input.feedUrl).trim()}`
       : sql`fe.feed_url IN (SELECT feed_url FROM subscriptions WHERE chat_id = ${userId})`;
 
-    const unreadEntries = await db.all(sql`
-      SELECT fe.id
+    // Single atomic batch query to mark up to 500 unread entries in one database operation
+    await db.run(sql`
+      INSERT INTO user_article_states (user_id, entry_id, is_read, is_starred, read_at)
+      SELECT
+        ${userId},
+        fe.id,
+        1,
+        0,
+        unixepoch()
       FROM feed_entries fe
       LEFT JOIN user_article_states uas ON uas.entry_id = fe.id AND uas.user_id = ${userId}
       WHERE ${targetClause}
         AND (uas.is_read IS NULL OR uas.is_read = 0)
       LIMIT 500
+      ON CONFLICT (user_id, entry_id) DO UPDATE SET
+        is_read = 1,
+        read_at = unixepoch()
     `);
-
-    for (const row of unreadEntries) {
-      const existing = await db.select()
-        .from(userArticleStates)
-        .where(and(eq(userArticleStates.userId, userId), eq(userArticleStates.entryId, row.id)))
-        .get();
-
-      if (existing) {
-        await db.update(userArticleStates)
-          .set({ isRead: true, readAt: new Date() })
-          .where(eq(userArticleStates.id, existing.id))
-          .run();
-      } else {
-        await db.insert(userArticleStates).values({
-          userId,
-          entryId: row.id,
-          isRead: true,
-          isStarred: false,
-          readAt: new Date(),
-        }).onConflictDoNothing().run();
-      }
-    }
 
     return { success: true, ok: true };
   }
