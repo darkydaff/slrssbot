@@ -226,8 +226,111 @@ export default {
         endpoints: {
           health: 'GET /health',
           poll: 'POST /poll (Authorization: Bearer <POLL_SECRET or TGCLOUD_TOKEN>)',
+          telegraph: 'ANY /telegraph/* (High-availability Telegraph edge proxy)',
+          channel: 'GET /channel/:username (Telegram public channel HTML edge proxy)',
+          imageProxy: 'GET /image-proxy?url=... (Image CDN bridge for Bot API & Telegraph)',
         },
       });
+    }
+
+    if (url.pathname.startsWith('/image-proxy') || url.pathname.startsWith('/media-proxy')) {
+      const targetUrl = url.searchParams.get('url');
+      if (!targetUrl) return new Response('Missing url query parameter', { status: 400 });
+
+      try {
+        const fetchHeaders = {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'Accept': '*/*',
+        };
+        const rangeHeader = request.headers.get('Range');
+        if (rangeHeader) {
+          fetchHeaders['Range'] = rangeHeader;
+        }
+
+        const mediaRes = await fetch(targetUrl, {
+          headers: fetchHeaders,
+        });
+        if (!mediaRes.ok && mediaRes.status !== 206) {
+          return new Response(`Failed to fetch media: HTTP ${mediaRes.status}`, { status: mediaRes.status });
+        }
+
+        const resHeaders = new Headers();
+        resHeaders.set('Content-Type', mediaRes.headers.get('Content-Type') || 'application/octet-stream');
+        if (mediaRes.headers.get('Content-Length')) {
+          resHeaders.set('Content-Length', mediaRes.headers.get('Content-Length'));
+        }
+        if (mediaRes.headers.get('Content-Range')) {
+          resHeaders.set('Content-Range', mediaRes.headers.get('Content-Range'));
+        }
+        if (mediaRes.headers.get('Accept-Ranges')) {
+          resHeaders.set('Accept-Ranges', mediaRes.headers.get('Accept-Ranges'));
+        }
+        resHeaders.set('Cache-Control', 'public, max-age=86400');
+        resHeaders.set('Access-Control-Allow-Origin', '*');
+
+        return new Response(mediaRes.body, {
+          status: mediaRes.status,
+          headers: resHeaders,
+        });
+      } catch (err) {
+        return Response.json({ ok: false, error: err.message }, { status: 502 });
+      }
+    }
+
+    if (url.pathname.startsWith('/channel/')) {
+      const channelUsername = url.pathname.replace(/^\/channel\//, '').replace(/^@/, '');
+      const tmeUrl = `https://t.me/s/${channelUsername}`;
+
+      try {
+        const res = await fetch(tmeUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+        });
+        const html = await res.text();
+        return new Response(html, {
+          status: res.status,
+          headers: {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Cache-Control': 'public, max-age=60',
+            'Access-Control-Allow-Origin': '*',
+          },
+        });
+      } catch (err) {
+        return Response.json({ ok: false, error: err.message }, { status: 502 });
+      }
+    }
+
+    if (url.pathname.startsWith('/telegraph/')) {
+      const telegraphMethod = url.pathname.replace(/^\/telegraph\//, '');
+      const targetUrl = `https://api.telegra.ph/${telegraphMethod}`;
+
+      const forwardHeaders = {
+        'Content-Type': request.headers.get('Content-Type') || 'application/json',
+      };
+
+      try {
+        const bodyText = request.method !== 'GET' && request.method !== 'HEAD'
+          ? await request.text()
+          : undefined;
+
+        const res = await fetch(targetUrl, {
+          method: request.method,
+          headers: forwardHeaders,
+          body: bodyText,
+        });
+
+        const resBody = await res.text();
+        return new Response(resBody, {
+          status: res.status,
+          headers: {
+            'Content-Type': res.headers.get('Content-Type') || 'application/json',
+          },
+        });
+      } catch (err) {
+        return Response.json({ ok: false, error: err.message }, { status: 502 });
+      }
     }
 
     if (url.pathname === '/poll') {

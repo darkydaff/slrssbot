@@ -1,0 +1,12 @@
+{
+  "name": "sdk",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./db": "./db.js",
+    "./api": "./api.js",
+    "./fetch": "./fetch.js"
+  }
+}
+

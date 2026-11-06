@@ -3,6 +3,8 @@
  * Ensures HTML conforms strictly to Telegram Bot API HTML parse mode.
  */
 
+import { t } from './i18n.js';
+
 /**
  * Escape raw text for Telegram HTML.
  * @param {string} text
@@ -18,21 +20,51 @@ export function escapeHtml(text) {
 
 /**
  * Decode common HTML entities.
+ * Supports multi-pass decoding for double-escaped entities and all decimal/hex numeric entities.
  * @param {string} text
  * @returns {string}
  */
 export function decodeEntities(text) {
-  if (!text) return '';
-  return text
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&#39;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(Number(dec)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+  if (!text || typeof text !== 'string') return '';
+  let str = text;
+  for (let i = 0; i < 2; i++) {
+    if (!str.includes('&')) break;
+    str = str
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&quot;/gi, '"')
+      .replace(/&apos;/gi, "'")
+      .replace(/&#39;/gi, "'")
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(Number(dec)))
+      .replace(/&#x([0-9a-fA-F]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+      .replace(/&amp;/gi, '&');
+  }
+  return str;
+}
+
+/**
+ * Clean marketing widgets, subscription gates, hidden attributes, and promotional footers
+ * from article HTML for pristine reading in the Mini App reader.
+ * @param {string} html
+ * @returns {string}
+ */
+export function cleanArticleContent(html) {
+  if (!html || typeof html !== 'string') return '';
+  let res = html;
+
+  // 1. Remove hidden attribute from any elements (e.g. first-edition-gated-content)
+  res = res.replace(/\s+hidden\b(=["']?(?:true|hidden)?["']?)?/gi, '');
+
+  // 2. Remove first-edition subscription gate cards (9to5Google / Beehiiv)
+  res = res.replace(/<div\b[^>]*class=["'][^"']*first-edition-gate[\s\S]*?(?=<div\b[^>]*class=["'][^"']*first-edition-gated-content)/gi, '');
+  res = res.replace(/<div\b[^>]*class=["'][^"']*first-edition-gate["'][^>]*>[\s\S]*?<\/div>/gi, '');
+
+  // 3. Remove promotional footers, affiliate disclaimers, and tracking widgets
+  res = res.replace(/<div\b[^>]*class=["'][^"']*(?:visitor-promo|ad-disclaimer-container|google-preferred-source-badge|outpost-pub-container|sharedaddy|jp-relatedposts|likes-widget-placeholder|jetpack-likes-widget-wrapper)[\"'][^>]*>[\s\S]*?<\/div>/gi, '');
+  res = res.replace(/<div\b[^>]*id=["'](?:after_disclaimer_placement|atatags-[^\"']*)[\"'][^>]*>[\s\S]*?<\/div>/gi, '');
+
+  return res.trim();
 }
 
 /**
@@ -181,6 +213,7 @@ export function matchesFilter(item, includeRule, excludeRule) {
  * @returns {{text: string, photoUrl: string|null, photos: string[], audioUrl: string|null, replyMarkup?: object}}
  */
 export function formatPost(item, feedTitle, opts = {}) {
+  const lang = opts.lang || 'en';
   const title = escapeHtml(item.title || 'Untitled');
   const feed = escapeHtml(feedTitle || 'Feed');
   const link = item.link || '';
@@ -218,27 +251,37 @@ export function formatPost(item, feedTitle, opts = {}) {
 
   let footer = '';
   if (audioUrl) {
-    footer += `\n🎙️ <a href="${escapeHtml(audioUrl)}">Listen to Podcast Episode (Audio)</a>`;
+    footer += `\n🎙️ <a href="${escapeHtml(audioUrl)}">${t(lang, 'listen_podcast')}</a>`;
   }
   if (isYouTube) {
-    footer += `\n▶️ <a href="${escapeHtml(link)}">Watch Video on YouTube</a>`;
+    footer += `\n▶️ <a href="${escapeHtml(link)}">${t(lang, 'watch_youtube')}</a>`;
   }
   if (opts.telegraphUrl) {
-    footer += `\n⚡ <a href="${escapeHtml(opts.telegraphUrl)}">Instant View</a>`;
+    footer += `\n⚡ <a href="${escapeHtml(opts.telegraphUrl)}">${t(lang, 'instant_view')}</a>`;
   }
   if (link && !isYouTube) {
-    footer += `\n🔗 <a href="${escapeHtml(link)}">Read Original</a>`;
+    footer += `\n🔗 <a href="${escapeHtml(link)}">${t(lang, 'read_original')}</a>`;
   }
 
   const fullText = `${header}${truncatedBody}${footer}`.trim();
 
-  // Build inline keyboard reply_markup if media buttons are helpful
+  // Build inline keyboard reply_markup with localized buttons
   const inlineButtons = [];
+  if (opts.telegraphUrl) {
+    const row = [{ text: t(lang, 'btn_instant_view'), url: opts.telegraphUrl }];
+    if (link) {
+      row.push({ text: t(lang, 'btn_read_original'), url: link });
+    }
+    inlineButtons.push(row);
+  } else if (link && !isYouTube && opts.sendMode === 'photo') {
+    inlineButtons.push([{ text: t(lang, 'btn_read_original'), url: link }]);
+  }
+
   if (audioUrl) {
-    inlineButtons.push([{ text: '🎙️ Listen to Podcast Episode', url: audioUrl }]);
+    inlineButtons.push([{ text: t(lang, 'btn_listen_podcast'), url: audioUrl }]);
   }
   if (isYouTube) {
-    inlineButtons.push([{ text: '▶️ Watch on YouTube', url: link }]);
+    inlineButtons.push([{ text: t(lang, 'btn_watch_youtube'), url: link }]);
   }
 
   return {
@@ -254,18 +297,20 @@ export function formatPost(item, feedTitle, opts = {}) {
  * Format a native Telegram channel post into a message payload.
  * Follows clean Telegram channel rules: no fake repeated article title,
  * clean rich text, forwarded attribution, albums, and original post link.
+ * Supports dual-action Telegraph Instant View and native channel view.
  * @param {object} post
  * @param {string} channelTitle
  * @param {object} [opts]
  * @returns {{text: string, photoUrl: string|null, photos: string[], canSendPhoto: boolean, canSendMediaGroup: boolean, hasVideo: boolean, replyMarkup?: object}}
  */
 export function formatChannelPost(post, channelTitle, opts = {}) {
+  const lang = opts.lang || 'en';
   const displayTitle = escapeHtml(opts.customTitle || channelTitle || post.channel || 'Telegram Channel');
   const postUrl = post.url || `https://t.me/${post.channel}/${post.id}`;
 
   if (opts.sendMode === 'link_only') {
     return {
-      text: `<b>${displayTitle}</b>\n🔗 <a href="${escapeHtml(postUrl)}">View post in Telegram</a>`,
+      text: `<b>${displayTitle}</b>\n🔗 <a href="${escapeHtml(postUrl)}">${t(lang, 'view_post_in_telegram')}</a>`,
       photoUrl: null,
       photos: [],
       canSendPhoto: false,
@@ -277,9 +322,15 @@ export function formatChannelPost(post, channelTitle, opts = {}) {
   let header = `<b>${displayTitle}</b>\n`;
   if (post.forwardedFrom) {
     if (post.forwardedFrom.url) {
-      header += `<i>Forwarded from <a href="${escapeHtml(post.forwardedFrom.url)}">${escapeHtml(post.forwardedFrom.name)}</a></i>\n\n`;
+      header += `<i>${t(lang, 'forwarded_from')} <a href="${escapeHtml(post.forwardedFrom.url)}">${escapeHtml(post.forwardedFrom.name)}</a></i>\n\n`;
     } else {
-      header += `<i>Forwarded from ${escapeHtml(post.forwardedFrom.name)}</i>\n\n`;
+      header += `<i>${t(lang, 'forwarded_from')} ${escapeHtml(post.forwardedFrom.name)}</i>\n\n`;
+    }
+  } else if (post.replyTo) {
+    const replyNum = post.replyTo.url ? post.replyTo.url.split('/').pop() : '';
+    const replyLabel = replyNum ? `${t(lang, 'post_num')} #${replyNum}` : t(lang, 'post_num');
+    if (post.replyTo.url) {
+      header += `<i>↩️ ${t(lang, 'in_reply_to')} <a href="${escapeHtml(post.replyTo.url)}">${escapeHtml(replyLabel)}</a></i>\n\n`;
     }
   } else if (post.textHtml) {
     header += `\n`;
@@ -290,23 +341,38 @@ export function formatChannelPost(post, channelTitle, opts = {}) {
   const photo = photos[0] || null;
 
   let footer = '';
-  if (post.hasVideo) {
-    footer += `\n\n📹 <a href="${escapeHtml(postUrl)}">Watch Video in Telegram</a>`;
+  if (opts.telegraphUrl) {
+    footer += `\n\n⚡ <a href="${escapeHtml(opts.telegraphUrl)}">${t(lang, 'instant_view')}</a>`;
+    footer += `\n🔗 <a href="${escapeHtml(postUrl)}">${t(lang, 'view_in_telegram')}</a>`;
+  } else if (post.videoUrl) {
+    footer += `\n\n🔗 <a href="${escapeHtml(postUrl)}">${t(lang, 'view_in_telegram')}</a>`;
+  } else if (post.hasVideo) {
+    footer += `\n\n📹 <a href="${escapeHtml(postUrl)}">${t(lang, 'watch_video_telegram')}</a>`;
   } else {
-    footer += `\n\n🔗 <a href="${escapeHtml(postUrl)}">View in Telegram</a>`;
+    footer += `\n\n🔗 <a href="${escapeHtml(postUrl)}">${t(lang, 'view_in_telegram')}</a>`;
   }
 
   const fullMessage = `${header}${cleanBody}${footer}`.trim();
   const isPhotoMode = opts.sendMode === 'photo';
   const fitsCaption = fullMessage.length <= 1020;
 
+  // Build dual action inline keyboard buttons with localized labels
   const inlineButtons = [];
-  if (post.hasVideo) {
-    inlineButtons.push([{ text: '📹 Watch Video in Telegram', url: postUrl }]);
+  if (opts.telegraphUrl) {
+    inlineButtons.push([
+      { text: t(lang, 'btn_instant_view'), url: opts.telegraphUrl },
+      { text: t(lang, 'btn_channel_post'), url: postUrl },
+    ]);
+  } else {
+    if (post.hasVideo && !post.videoUrl) {
+      inlineButtons.push([{ text: t(lang, 'btn_watch_video'), url: postUrl }]);
+    } else {
+      inlineButtons.push([{ text: t(lang, 'btn_channel_post'), url: postUrl }]);
+    }
   }
   const replyMarkup = inlineButtons.length > 0 ? { inline_keyboard: inlineButtons } : undefined;
 
-  if (photo && (isPhotoMode || fitsCaption)) {
+  if ((post.videoUrl || photo) && opts.sendMode !== 'link_only') {
     let captionText = fullMessage;
     if (captionText.length > 1020) {
       const allowedBody = 1020 - header.length - footer.length;
@@ -316,23 +382,51 @@ export function formatChannelPost(post, channelTitle, opts = {}) {
       text: captionText,
       photoUrl: photo,
       photos,
-      canSendPhoto: true,
-      canSendMediaGroup: photos.length > 1,
+      videoUrl: post.videoUrl || null,
+      canSendVideo: Boolean(post.videoUrl),
+      canSendPhoto: Boolean(photo),
+      canSendMediaGroup: photos.length > 1 && !post.videoUrl,
       hasVideo: Boolean(post.hasVideo),
       replyMarkup,
     };
   }
 
-  const truncatedText = truncate(cleanBody, 3600);
+  const maxTextLength = opts.telegraphUrl ? 1800 : 3600;
+  const truncatedText = truncate(cleanBody, maxTextLength);
   return {
     text: `${header}${truncatedText}${footer}`.trim(),
     photoUrl: photo,
     photos,
+    videoUrl: post.videoUrl || null,
+    canSendVideo: Boolean(post.videoUrl),
     canSendPhoto: false,
     canSendMediaGroup: false,
     hasVideo: Boolean(post.hasVideo),
     replyMarkup,
   };
+}
+
+/**
+ * Extract a clean, plain-text summary/excerpt from HTML or text.
+ * @param {string} htmlOrText
+ * @param {number} [maxLen]
+ * @returns {string}
+ */
+export function extractCleanSummary(htmlOrText, maxLen = 280) {
+  if (!htmlOrText || typeof htmlOrText !== 'string') return '';
+  const rawText = htmlOrText
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+    .replace(/<\/(p|div|h[1-6]|li|blockquote|tr|section|article)>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<[^>]+>/g, '');
+
+  const text = decodeEntities(rawText)
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (text.length <= maxLen) return text;
+  return text.slice(0, maxLen).trim() + '…';
 }
 
 

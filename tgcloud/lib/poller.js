@@ -3,11 +3,14 @@
  */
 
 import { db, api, fetch, BotApiError } from 'sdk';
-import { eq, and, sql } from 'sdk/db';
+import { eq, and, sql, desc } from 'sdk/db';
 import { subscriptions, feedStates, feedEntries } from '../schema.js';
 import { parseFeed } from './rss.js';
-import { formatPost, formatChannelPost, matchesFilter, truncate } from './formatter.js';
+import { formatPost, formatChannelPost, matchesFilter, truncate, extractCleanSummary, decodeEntities, cleanArticleContent } from './formatter.js';
+import { getChatLanguage } from './i18n.js';
 import { createTelegraphPage } from './telegraph.js';
+import { isTeaserContent, fetchAndExtractArticle } from './article_extractor.js';
+import { parseUrl } from './feed_finder.js';
 import {
   isTelegramChannelUrl,
   extractChannelUsername,
@@ -46,7 +49,25 @@ async function deliverItemToSubscriber({ sub, formatted, originalUrl, title, per
       }
     }
 
-    // 2. Photo Album or Single Photo:
+    // 2. Video delivery (Telegram channel post with video or RSS video enclosure)
+    if (formatted.videoUrl && sub.sendMode !== 'link_only') {
+      try {
+        const caption = truncate(formatted.text, 1020);
+        await api.sendVideo({
+          chat_id: sub.chatId,
+          video: formatted.videoUrl,
+          caption,
+          parse_mode: 'HTML',
+          reply_markup: formatted.replyMarkup,
+        });
+        return;
+      } catch (err) {
+        console.warn('[deliverItemToSubscriber] sendVideo failed, falling back to photo/text:', err.message);
+        // Fall back to photo or text
+      }
+    }
+
+    // 3. Photo Album or Single Photo:
     // Only send as photos/albums if:
     //  a) It's a Telegram channel post with photos, OR
     //  b) The user explicitly set sendMode: 'photo' in settings
@@ -142,6 +163,8 @@ export async function pollSingleTelegramChannel(feedUrl) {
     await db.insert(feedStates).values({
       feedUrl,
       title: channelTitle,
+      description: channelData.channelDescription || null,
+      siteUrl: channelData.channelUrl || null,
       lastCheckedAt: new Date(),
       lastError: null,
       errorCount: 0,
@@ -149,6 +172,8 @@ export async function pollSingleTelegramChannel(feedUrl) {
       target: feedStates.feedUrl,
       set: {
         title: channelTitle,
+        description: channelData.channelDescription || null,
+        siteUrl: channelData.channelUrl || null,
         lastCheckedAt: new Date(),
         lastError: null,
         errorCount: 0,
@@ -178,16 +203,121 @@ export async function pollSingleTelegramChannel(feedUrl) {
         .where(and(eq(feedEntries.feedUrl, feedUrl), eq(feedEntries.entryGuid, guid)))
         .get();
 
+      const boldMatch = (post.textHtml || '').match(/<b>(.*?)<\/b>/i);
+      const firstLine = (post.plainText || '').split('\n')[0].trim();
+      let pageTitle = channelTitle;
+      if (boldMatch && boldMatch[1]) {
+        pageTitle = decodeEntities(boldMatch[1].replace(/<[^>]+>/g, '')).trim().slice(0, 100);
+      } else if (firstLine && firstLine.length > 5 && firstLine.length < 100) {
+        pageTitle = decodeEntities(firstLine);
+      } else if (post.id) {
+        pageTitle = `${channelTitle} #${post.id}`;
+      }
+      pageTitle = decodeEntities(pageTitle);
+
+      const mediaItems = [];
+      if (post.photos && post.photos.length > 0) {
+        for (const p of post.photos) {
+          mediaItems.push({ url: p, type: 'image' });
+        }
+      }
+      if (post.videoUrl) {
+        mediaItems.push({ url: post.videoUrl, type: 'video' });
+      }
+
+      const summaryText = extractCleanSummary(post.plainText || post.textHtml || '');
+      const contentHtml = post.textHtml || `<p>${post.plainText || ''}</p>`;
+      const leadImg = post.photos?.[0] || post.photoUrl || null;
+
       if (existing) {
+        // Backfill data if empty or if previously corrupted or has unescaped entities
+        const currentContent = existing.content || '';
+        const currentTitle = existing.title || '';
+        const hasEntities = currentTitle.includes('&quot;') || currentTitle.includes('&#') || currentContent.includes('&#');
+        const isCorrupted = Boolean(
+          (post.replyTo && post.replyTo.text && currentContent.includes(post.replyTo.text)) ||
+          existing.content !== contentHtml ||
+          existing.leadImageUrl !== leadImg ||
+          existing.title !== pageTitle ||
+          hasEntities
+        );
+        if (!existing.title || !existing.content || isCorrupted) {
+          await db.update(feedEntries)
+            .set({
+              title: pageTitle,
+              link: post.url,
+              author: channelTitle,
+              summary: summaryText,
+              content: contentHtml,
+              leadImageUrl: leadImg,
+              media: mediaItems,
+            })
+            .where(eq(feedEntries.id, existing.id))
+            .run();
+        }
         continue;
       }
 
-      // Record entry as processed first (deduplication)
+      // Check if channel post is eligible for Telegraph Instant View:
+      // Channel posts only generate Telegraph if:
+      // 1) The subscriber explicitly selected 'telegraph' mode, OR
+      // 2) The post text exceeds single message limits (>1200 chars without video, or >1020 chars with video)
+      let telegraphUrl = null;
+      const textLen = (post.plainText || '').length;
+      const shouldGenerateTelegraph = subs.some((s) => s.sendMode === 'telegraph') ||
+        (textLen > 1200 && !post.videoUrl) ||
+        (textLen > 1020 && post.videoUrl);
+
+      if (shouldGenerateTelegraph) {
+        try {
+          let postContentHtml = '';
+          if (post.photos && post.photos.length > 0) {
+            for (const pUrl of post.photos) {
+              postContentHtml += `<figure><img src="${pUrl}"/></figure>`;
+            }
+          }
+          if (post.replyTo) {
+            const replyTitle = post.replyTo.author ? `In reply to ${post.replyTo.author}` : 'In reply to post';
+            postContentHtml += `<blockquote>${replyTitle} (<a href="${post.replyTo.url}">view</a>): ${escapeHtml(post.replyTo.text || '')}</blockquote>`;
+          }
+          postContentHtml += post.textHtml || `<p>${post.plainText || ''}</p>`;
+          if (post.forwardedFrom) {
+            const fLink = post.forwardedFrom.url
+              ? `<a href="${post.forwardedFrom.url}">${post.forwardedFrom.name}</a>`
+              : post.forwardedFrom.name;
+            postContentHtml += `<blockquote>Forwarded from ${fLink}</blockquote>`;
+          }
+          postContentHtml += `<p><hr><a href="${post.url}">Original message on Telegram</a></p>`;
+
+          telegraphUrl = await createTelegraphPage({
+            title: pageTitle,
+            contentHtml: postContentHtml,
+            authorName: channelTitle,
+            authorUrl: post.url,
+            leadImageUrl: leadImg,
+            dbInstance: db,
+          });
+          console.log('[pollSingleTelegramChannel] Generated telegraphUrl:', telegraphUrl);
+        } catch (err) {
+          console.error('[pollSingleTelegramChannel] createTelegraphPage error:', err.message);
+          // Fallback to regular delivery
+        }
+      }
+
+      // Record entry as processed with all metadata
       await db.insert(feedEntries).values({
         feedUrl,
         entryGuid: guid,
+        title: pageTitle,
+        link: post.url,
+        author: channelTitle,
+        summary: summaryText,
+        content: contentHtml,
+        leadImageUrl: leadImg,
+        media: mediaItems,
+        telegraphUrl,
         publishedAt: post.pubDate || new Date(),
-      }).onConflictDoNothing({ target: feedEntries.id }).run();
+      }).onConflictDoNothing().run();
 
       newItemsCount++;
 
@@ -197,15 +327,18 @@ export async function pollSingleTelegramChannel(feedUrl) {
           continue;
         }
 
+        const subLang = await getChatLanguage(sub.chatId);
         const formatted = formatChannelPost(post, sub.customTitle || channelTitle, {
           sendMode: sub.sendMode,
           customTitle: sub.customTitle,
+          telegraphUrl,
+          lang: subLang,
         });
 
         await deliverItemToSubscriber({
           sub,
           formatted,
-          originalUrl: post.url,
+          originalUrl: telegraphUrl || post.url,
           title: post.id ? `Post #${post.id}` : undefined,
           performer: channelTitle,
           isChannelPost: true,
@@ -237,19 +370,39 @@ export async function pollSingleFeed(feedUrl) {
   try {
     const state = await db.select().from(feedStates).where(eq(feedStates.feedUrl, feedUrl)).get();
 
+    // Check if any existing entries for this feed need backfilling (e.g. missing title/content/link or short teaser)
+    const incomplete = await db.get(
+      sql`SELECT count(*) AS c FROM feed_entries WHERE feed_url = ${feedUrl} AND (title IS NULL OR content IS NULL OR title = 'Untitled' OR link = '' OR length(content) < 500)`
+    );
+    const needsBackfill = incomplete && incomplete.c > 0;
+
     const headers = {
       'User-Agent': USER_AGENT,
       'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, application/json, */*',
     };
 
-    if (state?.etag) {
-      headers['If-None-Match'] = state.etag;
-    }
-    if (state?.lastModified) {
-      headers['If-Modified-Since'] = state.lastModified;
+    // Only send caching headers if there are no incomplete entries needing backfill
+    if (!needsBackfill) {
+      if (state?.etag) {
+        headers['If-None-Match'] = state.etag;
+      }
+      if (state?.lastModified) {
+        headers['If-Modified-Since'] = state.lastModified;
+      }
     }
 
-    const res = await fetch(feedUrl, { headers });
+    let res;
+    try {
+      res = await fetch(feedUrl, { headers });
+    } catch (fetchErr) {
+      const u = parseUrl(feedUrl);
+      if (u && !u.hostname.startsWith('www.') && !u.hostname.includes('t.me')) {
+        const fallbackUrl = feedUrl.replace('://', '://www.');
+        res = await fetch(fallbackUrl, { headers });
+      } else {
+        throw fetchErr;
+      }
+    }
 
     // 304 Not Modified: no new content
     if (res.status === 304) {
@@ -283,6 +436,8 @@ export async function pollSingleFeed(feedUrl) {
     await db.insert(feedStates).values({
       feedUrl,
       title: parsedFeed.title,
+      description: parsedFeed.description || null,
+      siteUrl: parsedFeed.link || null,
       etag,
       lastModified,
       lastCheckedAt: new Date(),
@@ -292,6 +447,8 @@ export async function pollSingleFeed(feedUrl) {
       target: feedStates.feedUrl,
       set: {
         title: parsedFeed.title,
+        description: parsedFeed.description || null,
+        siteUrl: parsedFeed.link || null,
         etag,
         lastModified,
         lastCheckedAt: new Date(),
@@ -324,42 +481,124 @@ export async function pollSingleFeed(feedUrl) {
         .where(and(eq(feedEntries.feedUrl, feedUrl), eq(feedEntries.entryGuid, guid)))
         .get();
 
-      if (existing) {
+      const existingNeedsEnrichment = existing && (
+        !existing.title ||
+        !existing.content ||
+        existing.title === 'Untitled' ||
+        !existing.link ||
+        existing.content.length < 500 ||
+        isTeaserContent(existing.content)
+      );
+
+      // If already processed and fully populated, skip
+      if (existing && !existingNeedsEnrichment) {
         continue;
       }
 
-      // Record entry as processed first (deduplication)
-      await db.insert(feedEntries).values({
-        feedUrl,
-        entryGuid: guid,
-        publishedAt: item.pubDate || new Date(),
-      }).onConflictDoNothing({ target: feedEntries.id }).run();
-
-      newItemsCount++;
-
-      // Broadcast to all subscribers
+      // Telegraph generation logic with full-text article extraction for teasers (e.g. 9to5Google, WordPress)
       let telegraphUrl = null;
-      if (item.content && (item.content.length > 1500 || subs.some((s) => s.sendMode === 'telegraph'))) {
+      let articleBody = item.content || item.description || '';
+      let articleAuthor = item.author || parsedFeed.title;
+      let articleTitle = item.title;
+      let articleLeadImage = item.imageUrl || item.enclosure?.url || null;
+
+      // If the RSS feed content itself is a teaser/snippet or under 800 chars, extract full text from item.link.
+      // If the RSS feed already provided substantive content (e.g. 404 Media has 7KB+ text), use it directly.
+      const isTeaser = isTeaserContent(articleBody) || articleBody.length < 800;
+      const shouldExtract = item.link && (isTeaser || subs.some((s) => s.sendMode === 'telegraph'));
+
+      if (shouldExtract) {
+        try {
+          const extracted = await fetchAndExtractArticle(item.link);
+          if (extracted?.contentHtml && extracted.contentHtml.length > articleBody.length) {
+            articleBody = extracted.contentHtml;
+            if (extracted.author) articleAuthor = extracted.author;
+            if (extracted.title) articleTitle = extracted.title;
+          }
+          if (extracted?.leadImage && !articleLeadImage) {
+            articleLeadImage = extracted.leadImage;
+          }
+        } catch {
+          // Fall back to feed content
+        }
+      }
+
+      const itemSummary = extractCleanSummary(articleBody || item.description || item.content || '');
+      let itemContent = cleanArticleContent(articleBody || item.content || item.description || '');
+      const itemLeadImg = articleLeadImage || item.imageUrl || item.enclosure?.url || (item.media?.find(m => m.type?.startsWith('image') || /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(m.url))?.url) || null;
+      const itemMedia = item.media || [];
+
+      if (existing) {
+        // Backfill existing entry in DB so the Mini App displays full title, links, and text
+        await db.update(feedEntries)
+          .set({
+            title: articleTitle || item.title || existing.title || 'Untitled',
+            link: item.link || existing.link || '',
+            author: articleAuthor || existing.author || '',
+            summary: itemSummary || existing.summary || '',
+            content: itemContent || existing.content || '',
+            leadImageUrl: itemLeadImg || existing.leadImageUrl || null,
+            media: (itemMedia && itemMedia.length > 0) ? itemMedia : existing.media,
+          })
+          .where(eq(feedEntries.id, existing.id))
+          .run();
+        continue;
+      }
+
+      // Generate Telegraph page if content is substantive (>800 chars) or requested by subscriber
+      if (articleBody && (articleBody.length > 800 || subs.some((s) => s.sendMode === 'telegraph' || s.sendMode === 'instant_view'))) {
         try {
           telegraphUrl = await createTelegraphPage({
-            title: item.title,
-            contentHtml: item.content,
-            authorName: parsedFeed.title,
+            title: articleTitle,
+            contentHtml: articleBody,
+            authorName: articleAuthor,
             authorUrl: item.link,
+            leadImageUrl: articleLeadImage,
+            dbInstance: db,
           });
-        } catch {
+          console.log('[pollSingleFeed] Generated telegraphUrl:', telegraphUrl);
+          if (telegraphUrl) {
+            try {
+              const telContent = await fetchAndExtractArticle(telegraphUrl);
+              if (telContent?.contentHtml && telContent.contentHtml.length > 500) {
+                itemContent = telContent.contentHtml;
+              }
+            } catch {}
+          }
+        } catch (err) {
+          console.error('[pollSingleFeed] createTelegraphPage error:', err.message);
           // Continue without Telegraph if service fails
         }
       }
 
+      // Record entry as processed with full article content and metadata
+      await db.insert(feedEntries).values({
+        feedUrl,
+        entryGuid: guid,
+        title: articleTitle || item.title || 'Untitled',
+        link: item.link || '',
+        author: articleAuthor || '',
+        summary: itemSummary,
+        content: itemContent,
+        leadImageUrl: itemLeadImg,
+        media: itemMedia,
+        telegraphUrl,
+        publishedAt: item.pubDate || new Date(),
+      }).onConflictDoNothing().run();
+
+      newItemsCount++;
+
+      // Broadcast to all subscribers
       for (const sub of subs) {
         if (!matchesFilter(item, sub.filterInclude, sub.filterExclude)) {
           continue;
         }
 
+        const subLang = await getChatLanguage(sub.chatId);
         const formatted = formatPost(item, sub.customTitle || parsedFeed.title, {
           sendMode: sub.sendMode,
           telegraphUrl,
+          lang: subLang,
         });
 
         await deliverItemToSubscriber({
@@ -389,44 +628,50 @@ export async function pollSingleFeed(feedUrl) {
  */
 export async function migrateLegacySubscriptions() {
   try {
-    const allSubs = await db.select().from(subscriptions).all();
-    for (const s of allSubs) {
-      if (s.feedUrl.includes('tg.i-c-a.su/rss/') || s.feedUrl.includes('/telegram/channel/')) {
-        const username = extractChannelUsername(s.feedUrl);
-        if (username) {
-          const canonicalUrl = getCanonicalChannelUrl(username);
+    const legacySubs = await db.select()
+      .from(subscriptions)
+      .where(sql`${subscriptions.feedUrl} LIKE '%tg.i-c-a.su%' OR ${subscriptions.feedUrl} LIKE '%/telegram/channel/%'`)
+      .all();
 
-          // Update subscription
-          await db.update(subscriptions)
-            .set({ feedUrl: canonicalUrl })
-            .where(eq(subscriptions.id, s.id))
-            .run();
+    if (!legacySubs || legacySubs.length === 0) {
+      return;
+    }
 
-          // Migrate feedStates if exists
-          const oldState = await db.select().from(feedStates).where(eq(feedStates.feedUrl, s.feedUrl)).get();
-          if (oldState) {
-            await db.insert(feedStates).values({
-              feedUrl: canonicalUrl,
+    for (const s of legacySubs) {
+      const username = extractChannelUsername(s.feedUrl);
+      if (username) {
+        const canonicalUrl = getCanonicalChannelUrl(username);
+
+        // Update subscription
+        await db.update(subscriptions)
+          .set({ feedUrl: canonicalUrl })
+          .where(eq(subscriptions.id, s.id))
+          .run();
+
+        // Migrate feedStates if exists
+        const oldState = await db.select().from(feedStates).where(eq(feedStates.feedUrl, s.feedUrl)).get();
+        if (oldState) {
+          await db.insert(feedStates).values({
+            feedUrl: canonicalUrl,
+            title: oldState.title,
+            lastCheckedAt: oldState.lastCheckedAt,
+            errorCount: 0,
+          }).onConflictDoUpdate({
+            target: feedStates.feedUrl,
+            set: {
               title: oldState.title,
               lastCheckedAt: oldState.lastCheckedAt,
-              errorCount: 0,
-            }).onConflictDoUpdate({
-              target: feedStates.feedUrl,
-              set: {
-                title: oldState.title,
-                lastCheckedAt: oldState.lastCheckedAt,
-              },
-            }).run();
+            },
+          }).run();
 
-            await db.delete(feedStates).where(eq(feedStates.feedUrl, s.feedUrl)).run();
-          }
-
-          // Migrate feedEntries
-          await db.update(feedEntries)
-            .set({ feedUrl: canonicalUrl })
-            .where(eq(feedEntries.feedUrl, s.feedUrl))
-            .run();
+          await db.delete(feedStates).where(eq(feedStates.feedUrl, s.feedUrl)).run();
         }
+
+        // Migrate feedEntries
+        await db.update(feedEntries)
+          .set({ feedUrl: canonicalUrl })
+          .where(eq(feedEntries.feedUrl, s.feedUrl))
+          .run();
       }
     }
   } catch {
@@ -436,6 +681,7 @@ export async function migrateLegacySubscriptions() {
 
 /**
  * Poll all active feeds registered across subscriptions.
+ * Processes feeds in concurrent batches to prevent serverless execution timeouts.
  * @returns {Promise<Array<{feedUrl: string, newItemsCount: number, error: string|null}>>}
  */
 export async function pollAllFeeds() {
@@ -450,9 +696,24 @@ export async function pollAllFeeds() {
     .all();
 
   const results = [];
-  for (const row of activeSubs) {
-    const res = await pollSingleFeed(row.feedUrl);
-    results.push(res);
+  const BATCH_SIZE = 3;
+
+  for (let i = 0; i < activeSubs.length; i += BATCH_SIZE) {
+    const batch = activeSubs.slice(i, i + BATCH_SIZE);
+    const settled = await Promise.allSettled(batch.map((row) => pollSingleFeed(row.feedUrl)));
+
+    for (let j = 0; j < settled.length; j++) {
+      const outcome = settled[j];
+      if (outcome.status === 'fulfilled') {
+        results.push(outcome.value);
+      } else {
+        results.push({
+          feedUrl: batch[j].feedUrl,
+          newItemsCount: 0,
+          error: outcome.reason?.message || 'Polling error',
+        });
+      }
+    }
   }
 
   return results;
@@ -460,12 +721,114 @@ export async function pollAllFeeds() {
 
 /**
  * Force deliver the latest item(s) from a feed regardless of seen status.
+ * Prioritizes local database storage to avoid redundant external network requests
+ * and rate-limiting when the feed was already polled and stored.
  * @param {string} feedUrl
  * @param {number} chatId
  * @param {number} [count]
  * @returns {Promise<{title: string, sentCount: number, error: string|null}>}
  */
 export async function forcePollFeed(feedUrl, chatId, count = 1) {
+  const isChannel = isTelegramChannelUrl(feedUrl);
+
+  const sub = (await db.select()
+    .from(subscriptions)
+    .where(and(eq(subscriptions.chatId, chatId), eq(subscriptions.feedUrl, feedUrl)))
+    .get()) || { chatId, sendMode: 'default', customTitle: null };
+
+  // 1. Try delivering directly from local storage if entries are already cached
+  const storedEntries = await db.select()
+    .from(feedEntries)
+    .where(eq(feedEntries.feedUrl, feedUrl))
+    .orderBy(desc(feedEntries.publishedAt), desc(feedEntries.id))
+    .limit(count)
+    .all();
+
+  if (storedEntries.length > 0) {
+    let sentCount = 0;
+    const subLang = await getChatLanguage(chatId);
+    // If count > 1, send oldest to newest
+    const entriesToSend = [...storedEntries].reverse();
+
+    for (const entry of entriesToSend) {
+      let telegraphUrl = entry.telegraphUrl;
+      const articleBody = entry.content || entry.summary || '';
+
+      if (!telegraphUrl && articleBody && (articleBody.length > 800 || sub?.sendMode === 'telegraph' || sub?.sendMode === 'instant_view')) {
+        try {
+          telegraphUrl = await createTelegraphPage({
+            title: entry.title,
+            contentHtml: articleBody,
+            authorName: entry.author || sub?.customTitle || 'Article',
+            authorUrl: entry.link,
+            leadImageUrl: entry.leadImageUrl,
+            dbInstance: db,
+          });
+          // Cache telegraphUrl on entry
+          await db.update(feedEntries)
+            .set({ telegraphUrl })
+            .where(eq(feedEntries.id, entry.id))
+            .run();
+        } catch (err) {
+          console.warn('[forcePollFeed] createTelegraphPage error:', err.message);
+        }
+      }
+
+      let formatted;
+      if (isChannel) {
+        const post = {
+          id: entry.entryGuid ? parseInt(entry.entryGuid.split('/').pop(), 10) : null,
+          channel: extractChannelUsername(feedUrl),
+          url: entry.link,
+          textHtml: entry.content,
+          plainText: entry.summary,
+          photos: Array.isArray(entry.media) ? entry.media.filter((m) => m.type === 'image').map((m) => m.url) : [],
+          photoUrl: entry.leadImageUrl,
+          hasVideo: Array.isArray(entry.media) && entry.media.some((m) => m.type === 'video'),
+          videoUrl: Array.isArray(entry.media) ? entry.media.find((m) => m.type === 'video')?.url : null,
+          forwardedFrom: null,
+        };
+
+        formatted = formatChannelPost(post, sub?.customTitle || entry.author || 'Channel', {
+          sendMode: sub?.sendMode,
+          customTitle: sub?.customTitle,
+          telegraphUrl,
+          lang: subLang,
+        });
+      } else {
+        const item = {
+          title: entry.title,
+          link: entry.link,
+          author: entry.author,
+          content: entry.content,
+          description: entry.summary,
+          imageUrl: entry.leadImageUrl,
+          media: entry.media || [],
+          pubDate: entry.publishedAt,
+        };
+
+        formatted = formatPost(item, sub?.customTitle || entry.author || 'Feed', {
+          sendMode: sub?.sendMode,
+          telegraphUrl,
+          lang: subLang,
+        });
+      }
+
+      await deliverItemToSubscriber({
+        sub,
+        formatted,
+        originalUrl: telegraphUrl || entry.link,
+        title: entry.title,
+        performer: entry.author,
+        isChannelPost: isChannel,
+      });
+      sentCount++;
+    }
+
+    return { title: sub.customTitle || storedEntries[0]?.author || feedUrl, sentCount, error: null };
+  }
+
+  // 2. Fallback to network fetch if storage has no entries yet
   if (isTelegramChannelUrl(feedUrl)) {
     try {
       const channelUsername = extractChannelUsername(feedUrl);
@@ -482,15 +845,69 @@ export async function forcePollFeed(feedUrl, chatId, count = 1) {
 
       let sentCount = 0;
       for (const post of posts) {
+        let telegraphUrl = null;
+        const textLen = (post.plainText || '').length;
+        const shouldGenerateTelegraph = sub?.sendMode === 'telegraph' ||
+          (textLen > 1200 && !post.videoUrl) ||
+          (textLen > 1020 && post.videoUrl);
+
+        if (shouldGenerateTelegraph) {
+          try {
+            const boldMatch = (post.textHtml || '').match(/<b>(.*?)<\/b>/i);
+            const firstLine = (post.plainText || '').split('\n')[0].trim();
+            let pageTitle = data.channelTitle;
+            if (boldMatch && boldMatch[1]) {
+              pageTitle = boldMatch[1].replace(/<[^>]+>/g, '').trim().slice(0, 100);
+            } else if (firstLine && firstLine.length > 10 && firstLine.length < 90) {
+              pageTitle = firstLine;
+            } else if (post.id) {
+              pageTitle = `${data.channelTitle} #${post.id}`;
+            }
+
+            let postContentHtml = '';
+            if (post.photos && post.photos.length > 0) {
+              for (const pUrl of post.photos) {
+                postContentHtml += `<figure><img src="${pUrl}"/></figure>`;
+              }
+            }
+            if (post.replyTo) {
+              const replyTitle = post.replyTo.author ? `In reply to ${post.replyTo.author}` : 'In reply to post';
+              postContentHtml += `<blockquote>${replyTitle} (<a href="${post.replyTo.url}">view</a>): ${escapeHtml(post.replyTo.text || '')}</blockquote>`;
+            }
+            postContentHtml += post.textHtml || `<p>${post.plainText || ''}</p>`;
+            if (post.forwardedFrom) {
+              const fLink = post.forwardedFrom.url
+                ? `<a href="${post.forwardedFrom.url}">${post.forwardedFrom.name}</a>`
+                : post.forwardedFrom.name;
+              postContentHtml += `<blockquote>Forwarded from ${fLink}</blockquote>`;
+            }
+            postContentHtml += `<p><hr><a href="${post.url}">Original message on Telegram</a></p>`;
+
+            telegraphUrl = await createTelegraphPage({
+              title: pageTitle,
+              contentHtml: postContentHtml,
+              authorName: data.channelTitle,
+              authorUrl: post.url,
+              leadImageUrl: post.photos?.[0] || post.photoUrl,
+              dbInstance: db,
+            });
+          } catch {
+            // Fallback
+          }
+        }
+
+        const subLang = await getChatLanguage(chatId);
         const formatted = formatChannelPost(post, sub?.customTitle || data.channelTitle, {
           sendMode: sub?.sendMode,
           customTitle: sub?.customTitle,
+          telegraphUrl,
+          lang: subLang,
         });
 
         await deliverItemToSubscriber({
           sub,
           formatted,
-          originalUrl: post.url,
+          originalUrl: telegraphUrl || post.url,
           title: post.id ? `Post #${post.id}` : undefined,
           performer: data.channelTitle,
           isChannelPost: true,
@@ -510,7 +927,18 @@ export async function forcePollFeed(feedUrl, chatId, count = 1) {
       'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, application/json, */*',
     };
 
-    const res = await fetch(feedUrl, { headers });
+    let res;
+    try {
+      res = await fetch(feedUrl, { headers });
+    } catch (fetchErr) {
+      const u = parseUrl(feedUrl);
+      if (u && !u.hostname.startsWith('www.') && !u.hostname.includes('t.me')) {
+        const fallbackUrl = feedUrl.replace('://', '://www.');
+        res = await fetch(fallbackUrl, { headers });
+      } else {
+        throw fetchErr;
+      }
+    }
     if (!res.ok) {
       throw new Error(`HTTP ${res.status}: ${res.statusText}`);
     }
@@ -531,22 +959,50 @@ export async function forcePollFeed(feedUrl, chatId, count = 1) {
     let sentCount = 0;
     for (const item of items) {
       let telegraphUrl = null;
-      if (item.content && (item.content.length > 1500 || sub?.sendMode === 'telegraph')) {
+      let articleBody = item.content || item.description || '';
+      let articleAuthor = item.author || parsedFeed.title;
+      let articleTitle = item.title;
+      let articleLeadImage = item.imageUrl || item.enclosure?.url || null;
+
+      // Extract full text if teaser
+      if (item.link && (isTeaserContent(articleBody) || (articleBody.length < 1500 && sub?.sendMode === 'telegraph'))) {
+        try {
+          const extracted = await fetchAndExtractArticle(item.link);
+          if (extracted?.contentHtml && extracted.contentHtml.length > articleBody.length) {
+            articleBody = extracted.contentHtml;
+            if (extracted.author) articleAuthor = extracted.author;
+            if (extracted.title) articleTitle = extracted.title;
+          }
+          if (extracted?.leadImage && !articleLeadImage) {
+            articleLeadImage = extracted.leadImage;
+          }
+        } catch {
+          // Fallback
+        }
+      }
+
+      if (articleBody && (articleBody.length > 800 || sub?.sendMode === 'telegraph' || sub?.sendMode === 'instant_view')) {
         try {
           telegraphUrl = await createTelegraphPage({
-            title: item.title,
-            contentHtml: item.content,
-            authorName: parsedFeed.title,
+            title: articleTitle,
+            contentHtml: articleBody,
+            authorName: articleAuthor,
             authorUrl: item.link,
+            leadImageUrl: articleLeadImage,
+            dbInstance: db,
           });
-        } catch {
+          console.log('[forcePollFeed] Successfully generated telegraphUrl:', telegraphUrl);
+        } catch (err) {
+          console.error('[forcePollFeed] createTelegraphPage error:', err.message);
           // Fallback to regular message
         }
       }
 
+      const subLang = await getChatLanguage(chatId);
       const formatted = formatPost(item, sub?.customTitle || parsedFeed.title, {
         sendMode: sub?.sendMode,
         telegraphUrl,
+        lang: subLang,
       });
 
       await deliverItemToSubscriber({

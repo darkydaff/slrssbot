@@ -1,128 +1,127 @@
 # slrssbot
 
-RSS to Telegram Serverless Bot. Hosted on Telegram Serverless (`tgcloud`) with automated scheduling via Cloudflare Workers.
+RSS, Atom, JSON Feed, and Telegram channel syndication bot and Mini App running on Telegram Serverless (`tgcloud`) with scheduling via Cloudflare Workers.
 
 ## Overview
 
-`slrssbot` delivers syndication updates (RSS, Atom, JSON Feed, and public Telegram channels) to Telegram users, groups, and channels without requiring dedicated server infrastructure.
+`slrssbot` parses syndication feeds and public Telegram channels, stores articles and media in SQLite, delivers updates to Telegram chats, channels, and groups, and provides a Telegram Mini App reader interface.
 
-- **Execution Environment:** Telegram Serverless (V8 isolate platform)
-- **Database:** Persistent Cloud SQLite (`sdk/db`)
-- **Scheduler:** Cloudflare Workers Cron Trigger (`wrangler`)
-- **Protocol Support:** RSS 0.9x / 1.0 / 2.0, Atom 1.0, JSON Feed 1.x, Telegram Channel Web / RSS Mirrored feeds
+- **Runtime Environment:** Telegram Serverless (V8 Isolate)
+- **Database:** Persistent SQLite via `sdk/db`
+- **Mini App Client:** Single-page React application hosted via `tgcloud` static hosting
+- **Scheduler:** Cloudflare Workers cron trigger (`wrangler`) or systemd timer
 
-## Specification & Standards Conformance
+## Standards Conformance
 
-| Standard / Interface | Implementation |
-| :--- | :--- |
-| **RSS 2.0** | `tgcloud/lib/rss.js` (XML parser, enclosures, guid, pubDate) |
-| **Atom 1.0** (RFC 4287) | `tgcloud/lib/rss.js` (`feed`, `entry`, `link[rel=alternate]`) |
-| **JSON Feed 1.1** | `tgcloud/lib/rss.js` (JSON specification compliant) |
-| **OPML 2.0** | `tgcloud/lib/opml.js` (Import and export) |
-| **HTTP/1.1 Conditional Requests** (RFC 7232) | `ETag`, `If-None-Match`, `If-Modified-Since` cache validation |
-| **Telegram Bot API HTML** | `tgcloud/lib/formatter.js` (Sanitization to supported tags only) |
+| Standard | Identifier | Implementation Details |
+| :--- | :--- | :--- |
+| **Date and Time** | ISO 8601-1:2019 / RFC 3339 | Timestamps in storage and API payloads format as UTC strings (`YYYY-MM-DDTHH:mm:ss.sssZ`) or epoch integers. |
+| **Language Codes** | ISO 639-1:2002 | Two-letter language codes for localization (`en`, `uk`, `es`, `it`, `fr`, `de`, `tr`, `ja`, `pt`, `id`). |
+| **Language Tags** | BCP 47 / ISO 15897 | Script variants (`zh-Hans`, `zh-Hant`). Russian (`ru`) normalizes to Ukrainian (`uk`). |
+| **Character Encoding** | ISO/IEC 10646:2020 / UTF-8 | UTF-8 encoding across XML/HTML parsers, SQLite storage, and Telegram Bot API. |
+| **Data Interchange** | ISO/IEC 21778:2017 / RFC 8259 | JSON payload formatting in API endpoints and JSON Feed parser. |
+| **Atom Syndication** | RFC 4287 | Atom 1.0 XML parsing (`feed`, `entry`, `link`, `author`, `summary`, `content`). |
+| **RSS Syndication** | RSS 2.0 Specification | RSS 0.9x / 1.0 / 2.0 XML parsing (`channel`, `item`, `enclosure`, `guid`, `pubDate`). |
+| **JSON Feed** | JSON Feed 1.1 | JSON Feed parsing (`items`, `attachments`, `author`). |
+| **Subscription Outline** | OPML 2.0 | XML outline import and export (`opml`, `outline`). |
+| **HTTP Conditional Requests** | RFC 7232 | `ETag`, `If-None-Match`, `Last-Modified`, and `If-Modified-Since` cache validation. |
 
 ## Command Reference
 
-| Command | Arguments | Description |
+| Command | Parameters | Description |
 | :--- | :--- | :--- |
-| `/start` | None | Initialize bot session and display usage |
-| `/help` | None | Display available commands and filter syntax |
-| `/sub` | `<url>` or `@channel` | Subscribe current chat to feed or channel |
-| `/unsub` | `[url]` | Unsubscribe from feed or launch interactive list |
-| `/list` | None | List active subscriptions with inline keyboard controls |
-| `/poll` | None | Trigger immediate check for new entries |
-| `/export` | None | Export all active subscriptions as an OPML document |
-| `/set` | `<setting> <val>` | Configure delivery mode (`default`, `link_only`, `photo`) |
+| `/reader` | None | Opens the RSS Reader Mini App |
+| `/start` | None | Displays welcome text and command list |
+| `/help` | None | Displays detailed syntax guide and examples |
+| `/sub` | `<url>` or `@channel` | Subscribes chat or channel to a feed |
+| `/unsub` | `[url]` | Unsubscribes from a feed or displays interactive list |
+| `/list` | None | Lists active subscriptions with unsubscribe controls |
+| `/set` | None | Opens delivery mode selector (`default`, `telegraph`, `photo`, `link_only`) |
+| `/lang` | `[code]` | Changes language interface |
+| `/poll` | None | Checks subscriptions for new entries |
+| `/force_poll` | None | Immediately delivers the latest entry from subscriptions |
+| `/export` | None | Exports active subscriptions to an OPML 2.0 document |
 
-Sending an `.opml` or `.xml` file to the bot automatically imports subscriptions.
+Sending an `.opml` or `.xml` file to the bot initiates an automatic subscription import.
 
-## Architecture
+## Mini App API Endpoints
+
+The Mini App interacts with the backend via `POST /api/<name>` using Telegram WebApp authentication (`ctx.initData`).
+
+| Endpoint | Method | Request Payload | Response |
+| :--- | :--- | :--- | :--- |
+| `/api/get_articles` | POST | `{ filter: "all"\|"unread"\|"starred", feedUrl?, search?, limit?, offset? }` | `{ articles: Article[], total: number }` |
+| `/api/get_article` | POST | `{ id: number }` | `{ article: Article }` |
+| `/api/set_article_state` | POST | `{ entryId?, isRead?, isStarred?, markAllRead? }` | `{ ok: boolean }` |
+| `/api/get_feeds` | POST | `{}` | `{ feeds: Feed[], stats: Stats }` |
+| `/api/manage_feed` | POST | `{ action: "sub"\|"unsub"\|"pause"\|"resume"\|"set_mode"\|"set_lang", ... }` | Action-dependent result |
+| `/api/poll` | POST | `{}` | `{ results: PollResult[] }` |
+
+## Database Schema
+
+Database managed via `tgcloud/schema.js`:
+
+- `subscriptions`: Registered feed subscriptions per chat ID (`chat_id`, `feed_url`, `custom_title`, `send_mode`, `filter_include`, `filter_exclude`, `paused`, `created_at`).
+- `feed_states`: HTTP cache validation headers and feed metadata (`feed_url`, `title`, `description`, `site_url`, `etag`, `last_modified`, `last_checked_at`, `error_count`, `last_error`).
+- `feed_entries`: Permanent article, text, and media storage (`feed_url`, `entry_guid`, `title`, `link`, `author`, `summary`, `content`, `lead_image_url`, `media`, `telegraph_url`, `published_at`, `created_at`).
+- `user_article_states`: Per-user reading progress and bookmarks (`user_id`, `entry_id`, `is_read`, `is_starred`, `read_at`, `starred_at`).
+- `chat_settings`: Per-chat UI configuration (`chat_id`, `lang`, `enable_preview`, `display_template`).
+- `bot_config`: Global configuration values (`key`, `value`, `updated_at`).
+
+## Directory Structure
 
 ```
 slrssbot/
 ├── cloudflare/
-│   └── worker.js             # Cloudflare Worker cron trigger & HTTP proxy
+│   └── worker.js              # Cloudflare Workers cron poller trigger
+├── dist/                      # Mini App production build (static site)
 ├── docs/
-│   └── tgcloud-sdk.md        # Telegram Serverless SDK reference
+│   └── tgcloud-sdk.md         # Telegram Serverless SDK documentation
 ├── scripts/
-│   ├── poll_runner.js        # Node.js background poller runner
-│   └── systemd/              # Linux systemd user service & timer units
-├── test/                     # Node.js test suite
+│   ├── poll_runner.js         # Local background poller script
+│   └── systemd/               # Linux systemd service and timer units
+├── src/                       # Mini App source code (React + Tailwind CSS)
+│   ├── components/            # UI components (Reader, ArticleList, Modals)
+│   └── lib/                   # Client utilities (API, date, i18n, Telegram)
+├── test/                      # Node.js test suite
 ├── tgcloud/
-│   ├── schema.js             # SQLite DDL (subscriptions, states, deduplication)
-│   ├── endpoints/
-│   │   └── poll.js           # Management API invocation endpoint
-│   ├── handlers/
-│   │   ├── message.js        # Bot API message update handler
-│   │   └── callback_query.js # Bot API callback query handler
-│   └── lib/
-│       ├── feed_finder.js    # Web discovery for auto-locating feeds
-│       ├── formatter.js      # Telegram HTML sanitizer & template compiler
-│       ├── opml.js           # OPML import/export parser
-│       ├── poller.js         # Differential engine and broadcast pipeline
-│       ├── rss.js            # RSS/Atom/JSON feed parser
-│       ├── telegram_channel.js # Public channel fetcher & parser
-│       └── telegraph.js      # Telegraph API publisher
+│   ├── endpoints/             # HTTP API endpoints (POST /api/<name>)
+│   ├── handlers/              # Telegram update handlers (message, callback_query)
+│   ├── lib/                   # Backend modules (RSS, extractor, poller, i18n)
+│   └── schema.js              # SQLite database schema definition
 ├── package.json
-├── tgcloud.jsonc
-└── wrangler.toml             # Cloudflare Workers configuration
+├── tgcloud.jsonc              # Platform configuration and static routing
+└── wrangler.toml              # Cloudflare Workers deployment config
 ```
 
-## Deployment & Operations
+## Operations
 
-### 1. Telegram Serverless Deployment
-
-Prerequisites: Node.js >= 18, `@tgcloud/cli`.
+### Deployment
 
 ```bash
-# Verify local module state against cloud revision
-npm run status
-
-# Push modules to Telegram Serverless
+# Build frontend and push code to Telegram Serverless
 npm run deploy
 
-# Apply database migrations when tgcloud/schema.js changes
-npx tgcloud migrate
+# Check deployment sync status
+npm run status
 
-# Run poll endpoint directly
-npm run poll
+# Apply database schema migrations
+npx tgcloud migrate
 ```
 
-### 2. Cloudflare Edge Scheduling (Recommended)
-
-Scheduled execution runs on Cloudflare Workers edge runtime every 5 minutes (`*/5 * * * *`).
+### Scheduling
 
 ```bash
-# Authenticate with Cloudflare
-npx wrangler login
-
-# Deploy worker and cron trigger
+# Deploy Cloudflare Worker cron trigger (runs every 5 minutes)
 npm run cf:deploy
 
-# Configure Telegram Serverless access token
+# Configure Telegram Serverless auth token for cron trigger
 npm run cf:secret
-# Enter token format: app<id>:<secret>
-
-# Tail live worker execution logs
-npm run cf:tail
 ```
 
-### 3. Alternative Local Polling
-
-For self-hosted Linux environments:
+### Testing
 
 ```bash
-# Systemd user timer (runs every 5 minutes)
-systemctl --user list-timers rsstg-poller.timer
-
-# Background daemon runner
-npm run poll:daemon -- --interval=5
-```
-
-## Verification & Testing
-
-```bash
-# Execute unit test suite
+# Run test suite
 npm test
 ```

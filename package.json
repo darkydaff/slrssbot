@@ -3,10 +3,18 @@
   "private": true,
   "type": "module",
   "devDependencies": {
-    "@tgcloud/cli": "^0.2.0"
+    "@tailwindcss/vite": "^4.3.4",
+    "@tgcloud/cli": "^0.2.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "autoprefixer": "^10.6.2",
+    "postcss": "^8.5.32",
+    "sdk": "file:scripts/sdk_mock",
+    "tailwindcss": "^4.3.4",
+    "vite": "^8.3.6"
   },
   "scripts": {
-    "deploy": "tgcloud push",
+    "build": "vite build",
+    "deploy": "npm run build && tgcloud push",
     "status": "tgcloud status",
     "run": "tgcloud run",
     "poll": "tgcloud run endpoints/poll '{}'",
@@ -16,5 +24,10 @@
     "cf:tail": "npx wrangler tail",
     "cf:secret": "npx wrangler secret put TGCLOUD_TOKEN",
     "test": "node --test"
+  },
+  "dependencies": {
+    "lucide-react": "^1.69.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   }
 }

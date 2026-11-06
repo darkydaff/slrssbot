@@ -4,7 +4,8 @@
 
 import { api, db } from 'sdk';
 import { eq } from 'sdk/db';
-import { subscriptions } from '../schema.js';
+import { subscriptions, chatSettings } from '../schema.js';
+import { t, getChatLanguage, SUPPORTED_LANGUAGES, normalizeLanguageCode } from '../lib/i18n.js';
 
 export default async function (callbackQuery, ctx) {
   if (!callbackQuery || !callbackQuery.data) return;
@@ -13,9 +14,105 @@ export default async function (callbackQuery, ctx) {
   const queryId = callbackQuery.id;
   const message = callbackQuery.message;
   const chatId = message?.chat?.id;
+  const fromLang = callbackQuery.from?.language_code;
+
+  // 1. Language switcher callback
+  if (data === 'show_lang') {
+    const lang = await getChatLanguage(chatId, fromLang);
+    const keyboard = [];
+    const entries = Object.entries(SUPPORTED_LANGUAGES);
+    for (let i = 0; i < entries.length; i += 2) {
+      const row = [];
+      const [c1, item1] = entries[i];
+      row.push({ text: `${item1.flag} ${item1.native}`, callback_data: `set_lang:${c1}` });
+      if (entries[i + 1]) {
+        const [c2, item2] = entries[i + 1];
+        row.push({ text: `${item2.flag} ${item2.native}`, callback_data: `set_lang:${c2}` });
+      }
+      keyboard.push(row);
+    }
+    keyboard.push([{ text: `🌐 Auto (Telegram App)`, callback_data: `set_lang:auto` }]);
+
+    await api.answerCallbackQuery({ callback_query_id: queryId });
+    if (message) {
+      await api.editMessageText({
+        chat_id: chatId,
+        message_id: message.message_id,
+        text: t(lang, 'choose_lang'),
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: keyboard },
+      });
+    }
+    return;
+  }
+
+  if (data.startsWith('set_lang:')) {
+    const chosenLang = data.replace('set_lang:', '').trim();
+    const saveLang = chosenLang === 'auto' ? 'auto' : normalizeLanguageCode(chosenLang);
+
+    await db.insert(chatSettings).values({
+      chatId,
+      lang: saveLang,
+    }).onConflictDoUpdate({
+      target: chatSettings.chatId,
+      set: { lang: saveLang },
+    }).run();
+
+    const activeLang = saveLang === 'auto' ? normalizeLanguageCode(fromLang) : saveLang;
+    const langObj = SUPPORTED_LANGUAGES[activeLang] || SUPPORTED_LANGUAGES.en;
+    const langLabel = `${langObj.flag} ${langObj.native}`;
+
+    await api.answerCallbackQuery({
+      callback_query_id: queryId,
+      text: t(activeLang, 'lang_changed', { lang: langLabel }).replace(/<[^>]+>/g, ''),
+    });
+
+    if (message) {
+      await api.editMessageText({
+        chat_id: chatId,
+        message_id: message.message_id,
+        text: t(activeLang, 'lang_changed', { lang: langLabel }),
+        parse_mode: 'HTML',
+      });
+    }
+    return;
+  }
+
+  // Help info
+  if (data === 'help_info') {
+    const lang = await getChatLanguage(chatId, fromLang);
+    const help = `${t(lang, 'help_guide_title')}
+
+${t(lang, 'sub_help')}
+
+${t(lang, 'unsub_help')}
+
+${t(lang, 'manage_help')}`;
+
+    await api.answerCallbackQuery({ callback_query_id: queryId });
+    if (message) {
+      await api.editMessageText({
+        chat_id: chatId,
+        message_id: message.message_id,
+        text: help,
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: t(lang, 'btn_open_reader'), web_app: { url: 'https://app9057202653.tgcloud.ai' } }],
+            [
+              { text: t(lang, 'btn_my_subs'), callback_data: 'set_list' },
+              { text: t(lang, 'btn_language'), callback_data: 'show_lang' },
+            ],
+          ],
+        },
+      });
+    }
+    return;
+  }
 
   // 1. Unsubscribe action
   if (data.startsWith('unsub:')) {
+    const lang = await getChatLanguage(chatId, fromLang);
     const subId = parseInt(data.replace('unsub:', ''), 10);
     if (!subId) {
       await api.answerCallbackQuery({ callback_query_id: queryId, text: 'Invalid request.' });
@@ -24,12 +121,12 @@ export default async function (callbackQuery, ctx) {
 
     const sub = await db.select().from(subscriptions).where(eq(subscriptions.id, subId)).get();
     if (!sub) {
-      await api.answerCallbackQuery({ callback_query_id: queryId, text: 'Subscription not found or already deleted.' });
+      await api.answerCallbackQuery({ callback_query_id: queryId, text: t(lang, 'sub_not_found').replace(/<[^>]+>/g, '') });
       if (message) {
         await api.editMessageText({
           chat_id: chatId,
           message_id: message.message_id,
-          text: `⚠️ That subscription no longer exists.`,
+          text: t(lang, 'sub_not_found'),
         });
       }
       return;
@@ -39,14 +136,14 @@ export default async function (callbackQuery, ctx) {
 
     await api.answerCallbackQuery({
       callback_query_id: queryId,
-      text: 'Unsubscribed successfully.',
+      text: t(lang, 'unsub_success', { title: sub.customTitle || sub.feedUrl }).replace(/<[^>]+>/g, ''),
     });
 
     if (message) {
       await api.editMessageText({
         chat_id: chatId,
         message_id: message.message_id,
-        text: `✅ Unsubscribed from: <b>${sub.customTitle || sub.feedUrl}</b>`,
+        text: t(lang, 'unsub_success', { title: sub.customTitle || sub.feedUrl }),
         parse_mode: 'HTML',
       });
     }
@@ -55,28 +152,31 @@ export default async function (callbackQuery, ctx) {
 
   // 2. Open Settings for a feed: set_feed:<subId>
   if (data.startsWith('set_feed:')) {
+    const lang = await getChatLanguage(chatId, fromLang);
     const subId = parseInt(data.replace('set_feed:', ''), 10);
     const sub = await db.select().from(subscriptions).where(eq(subscriptions.id, subId)).get();
     if (!sub) {
-      await api.answerCallbackQuery({ callback_query_id: queryId, text: 'Subscription not found.' });
+      await api.answerCallbackQuery({ callback_query_id: queryId, text: t(lang, 'sub_not_found').replace(/<[^>]+>/g, '') });
       return;
     }
 
     const modeLabels = {
-      default: '⚡ Instant View / Preview (Default)',
-      instant_view: '⚡ Instant View / Preview',
-      photo: '🖼️ Photo Banner + Caption',
-      link_only: '🔗 Link Only (Compact)',
+      default: t(lang, 'mode_default'),
+      instant_view: t(lang, 'mode_default'),
+      telegraph: t(lang, 'mode_telegraph'),
+      photo: t(lang, 'mode_photo'),
+      link_only: t(lang, 'mode_link_only'),
     };
 
-    const currentMode = modeLabels[sub.sendMode] || sub.sendMode || '⚡ Instant View';
-    const text = `⚙️ <b>Settings for:</b>\n<b>${sub.customTitle || sub.feedUrl}</b>\n\n<b>Current Mode:</b> ${currentMode}\n\nSelect delivery mode:`;
+    const currentMode = modeLabels[sub.sendMode] || sub.sendMode || t(lang, 'mode_default');
+    const text = t(lang, 'settings_title', { title: sub.customTitle || sub.feedUrl, mode: currentMode });
 
     const keyboard = [
-      [{ text: '⚡ Instant View / Preview', callback_data: `set_mode:${sub.id}:instant_view` }],
-      [{ text: '🖼️ Photo Banner + Caption', callback_data: `set_mode:${sub.id}:photo` }],
-      [{ text: '🔗 Link Only (Compact)', callback_data: `set_mode:${sub.id}:link_only` }],
-      [{ text: '🔙 Back to Settings List', callback_data: 'set_list' }],
+      [{ text: t(lang, 'mode_default'), callback_data: `set_mode:${sub.id}:default` }],
+      [{ text: t(lang, 'mode_telegraph'), callback_data: `set_mode:${sub.id}:telegraph` }],
+      [{ text: t(lang, 'mode_photo'), callback_data: `set_mode:${sub.id}:photo` }],
+      [{ text: t(lang, 'mode_link_only'), callback_data: `set_mode:${sub.id}:link_only` }],
+      [{ text: t(lang, 'btn_back_settings'), callback_data: 'set_list' }],
     ];
 
     await api.answerCallbackQuery({ callback_query_id: queryId });
@@ -94,12 +194,13 @@ export default async function (callbackQuery, ctx) {
 
   // 3. Set delivery mode: set_mode:<subId>:<mode>
   if (data.startsWith('set_mode:')) {
+    const lang = await getChatLanguage(chatId, fromLang);
     const [, subIdStr, newMode] = data.split(':');
     const subId = parseInt(subIdStr, 10);
 
     const sub = await db.select().from(subscriptions).where(eq(subscriptions.id, subId)).get();
     if (!sub) {
-      await api.answerCallbackQuery({ callback_query_id: queryId, text: 'Subscription not found.' });
+      await api.answerCallbackQuery({ callback_query_id: queryId, text: t(lang, 'sub_not_found').replace(/<[^>]+>/g, '') });
       return;
     }
 
@@ -108,21 +209,26 @@ export default async function (callbackQuery, ctx) {
       .where(eq(subscriptions.id, subId))
       .run();
 
-    await api.answerCallbackQuery({
-      callback_query_id: queryId,
-      text: `Updated mode to: ${newMode}`,
-    });
-
     const modeLabels = {
-      instant_view: '⚡ Instant View / Preview',
-      photo: '🖼️ Photo Banner + Caption',
-      link_only: '🔗 Link Only (Compact)',
+      default: t(lang, 'mode_default'),
+      instant_view: t(lang, 'mode_default'),
+      telegraph: t(lang, 'mode_telegraph'),
+      photo: t(lang, 'mode_photo'),
+      link_only: t(lang, 'mode_link_only'),
     };
 
-    const text = `✅ <b>Settings Updated!</b>\n\n<b>Feed:</b> ${sub.customTitle || sub.feedUrl}\n<b>New Mode:</b> ${modeLabels[newMode] || newMode}`;
+    await api.answerCallbackQuery({
+      callback_query_id: queryId,
+      text: `${modeLabels[newMode] || newMode}`,
+    });
+
+    const text = t(lang, 'settings_updated', {
+      title: sub.customTitle || sub.feedUrl,
+      mode: modeLabels[newMode] || newMode,
+    });
 
     const keyboard = [
-      [{ text: '🔙 Back to Settings List', callback_data: 'set_list' }],
+      [{ text: t(lang, 'btn_back_settings'), callback_data: 'set_list' }],
     ];
 
     if (message) {
@@ -139,13 +245,14 @@ export default async function (callbackQuery, ctx) {
 
   // 4. Return to Settings list: set_list
   if (data === 'set_list') {
+    const lang = await getChatLanguage(chatId, fromLang);
     const subs = await db.select()
       .from(subscriptions)
       .where(eq(subscriptions.chatId, chatId))
       .all();
 
     if (subs.length === 0) {
-      await api.answerCallbackQuery({ callback_query_id: queryId, text: 'No subscriptions found.' });
+      await api.answerCallbackQuery({ callback_query_id: queryId, text: t(lang, 'no_subs').replace(/<[^>]+>/g, '') });
       return;
     }
 
@@ -159,7 +266,7 @@ export default async function (callbackQuery, ctx) {
       await api.editMessageText({
         chat_id: chatId,
         message_id: message.message_id,
-        text: `⚙️ <b>Configure Feed Delivery Mode:</b>\nSelect a subscription to change how it is sent:`,
+        text: t(lang, 'feed_delivery_mode'),
         parse_mode: 'HTML',
         reply_markup: { inline_keyboard: keyboard },
       });
@@ -167,8 +274,9 @@ export default async function (callbackQuery, ctx) {
     return;
   }
 
+  const defaultLang = await getChatLanguage(chatId, fromLang);
   await api.answerCallbackQuery({
     callback_query_id: queryId,
-    text: 'Action completed.',
+    text: t(defaultLang, 'action_completed'),
   });
 }

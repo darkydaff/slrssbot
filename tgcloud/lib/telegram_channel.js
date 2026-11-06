@@ -5,7 +5,7 @@
  */
 
 import { fetch } from 'sdk';
-import { sanitizeToTelegramHtml } from './formatter.js';
+import { sanitizeToTelegramHtml, decodeEntities } from './formatter.js';
 
 const SYSTEM_ROUTES = new Set([
   'joinchat', 'c', 'share', 'login', 'addstickers', 'addtheme', 's', 'contact', 'proxy', 'socks',
@@ -84,6 +84,21 @@ export function getCanonicalChannelUrl(username) {
 }
 
 /**
+ * Normalize image URLs from Telegram channels.
+ * Routes internal CDN domains (.telesco.pe) through the high-availability Cloudflare Worker
+ * image-proxy so Telegram Bot API and Telegraph crawlers can fetch them reliably without 400 errors.
+ * @param {string} url
+ * @returns {string}
+ */
+export function normalizeChannelImageUrl(url) {
+  if (!url || typeof url !== 'string') return url;
+  if (url.includes('.telesco.pe/') || url.includes('telegram.org/file/')) {
+    return `https://slrssbot-poller.darkydaff.workers.dev/image-proxy?url=${encodeURIComponent(url)}`;
+  }
+  return url;
+}
+
+/**
  * Clean Telegram widget HTML into compliant Telegram parse_mode: HTML.
  * @param {string} rawHtml
  * @returns {string}
@@ -93,15 +108,33 @@ export function cleanWidgetTextHtml(rawHtml) {
 
   let text = rawHtml;
 
-  // 1. Decode basic XML entities in case text came from an RSS wrapper
-  if (text.includes('&lt;') || text.includes('&gt;')) {
+  // 1. Decode entities safely in HTML (decode quotes, apostrophes, and numeric entities like &#33;)
+  // Keep &, <, > safe so HTML tags and markup remain valid
+  text = text
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&#39;/gi, "'")
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&#(\d+);/g, (match, dec) => {
+      const num = Number(dec);
+      if (num === 38) return '&amp;';
+      if (num === 60) return '&lt;';
+      if (num === 62) return '&gt;';
+      return String.fromCharCode(num);
+    })
+    .replace(/&#x([0-9a-fA-F]+);/gi, (match, hex) => {
+      const num = parseInt(hex, 16);
+      if (num === 38) return '&amp;';
+      if (num === 60) return '&lt;';
+      if (num === 62) return '&gt;';
+      return String.fromCharCode(num);
+    });
+
+  // If text came wrapped from an XML/RSS feed wrapper with escaped markup:
+  if (text.includes('&lt;') && text.includes('&gt;')) {
     text = text
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&apos;/g, "'")
-      .replace(/&#39;/g, "'")
-      .replace(/&amp;/g, '&');
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>');
   }
 
   // 2. Remove media wrapper anchors <a ...><img .../></a> so media links don't leak into body text
@@ -161,11 +194,29 @@ export function parseChannelHtml(html, channelUsername) {
     const postId = parseInt(refIdStr, 10);
     if (!postId) continue;
 
-    // Extract text content
-    const textMatch = postHtml.match(/<div class="[^"]*tgme_widget_message_text[^"]*"[^>]*>([\s\S]*?)<\/div>/i);
+    // Extract reply info before stripping it
+    let replyTo = null;
+    const replyMatch = postHtml.match(/<a\s+[^>]*?class="[^"]*tgme_widget_message_reply[^"]*"[^>]*?href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+    if (replyMatch) {
+      const replyUrl = replyMatch[1];
+      const replyBody = replyMatch[2];
+      const rAuthorMatch = replyBody.match(/<span\s+[^>]*?class="[^"]*tgme_widget_message_author_name[^"]*"[^>]*>([\s\S]*?)<\/span>/i);
+      const rTextMatch = replyBody.match(/<div\s+[^>]*?class="[^"]*js-message_reply_text[^"]*"[^>]*>([\s\S]*?)<\/div>/i);
+      replyTo = {
+        url: replyUrl,
+        author: rAuthorMatch ? decodeEntities(rAuthorMatch[1].replace(/<[^>]+>/g, '').trim()) : null,
+        text: rTextMatch ? decodeEntities(cleanWidgetTextHtml(rTextMatch[1]).replace(/<[^>]+>/g, '').trim()) : null,
+      };
+    }
+
+    // Strip reply block so its quoted text and thumbnail do NOT contaminate this post's content
+    const cleanPostHtml = postHtml.replace(/<a\s+[^>]*?class="[^"]*tgme_widget_message_reply[^"]*"[\s\S]*?<\/a>/gi, '');
+
+    // Extract text content of THIS post (ignoring reply quote)
+    const textMatch = cleanPostHtml.match(/<div class="[^"]*tgme_widget_message_text[^"]*"[^>]*>([\s\S]*?)<\/div>/i);
     const rawTextHtml = textMatch ? textMatch[1] : '';
     const cleanText = cleanWidgetTextHtml(rawTextHtml);
-    const plainText = cleanText.replace(/<[^>]+>/g, '').trim();
+    const plainText = decodeEntities(cleanText.replace(/<[^>]+>/g, '')).trim();
 
     // Extract forwarded info
     let forwardedFrom = null;
@@ -189,24 +240,26 @@ export function parseChannelHtml(html, channelUsername) {
       }
     }
 
-    // Extract media photos and video thumbnails (excluding avatars and reactions)
+    // Extract media photos and video thumbnails from clean post (excluding reply thumbnails)
     const photos = [];
     const mediaRegex = /<(?:a|i)\s+[^>]*?class="[^"]*(?:photo_wrap|grouped_layer|video_thumb)[^"]*"[^>]*?style="[^"]*background-image:\s*url\((?:'|"|&#39;|&quot;)?(https?:\/\/[^'")\s;]+)(?:'|"|&#39;|&quot;)?\)/gi;
     let m;
-    while ((m = mediaRegex.exec(postHtml)) !== null) {
-      const pUrl = m[1];
+    while ((m = mediaRegex.exec(cleanPostHtml)) !== null) {
+      const pUrl = normalizeChannelImageUrl(m[1]);
       if (pUrl && !photos.includes(pUrl)) {
         photos.push(pUrl);
       }
     }
 
     // Check video or round video
-    const videoMatch = postHtml.match(/<video[^>]*src="([^"]+)"/i);
+    const videoMatch = cleanPostHtml.match(/<video[^>]*src="([^"]+)"/i);
+    const rawVideoUrl = videoMatch ? videoMatch[1] : null;
+    const videoUrl = rawVideoUrl ? normalizeChannelImageUrl(rawVideoUrl) : null;
     const hasVideo = Boolean(
-      videoMatch ||
-      postHtml.includes('js-message_video_player') ||
-      postHtml.includes('tgme_widget_message_video_player') ||
-      postHtml.includes('tgme_widget_message_roundvideo_player')
+      videoUrl ||
+      cleanPostHtml.includes('js-message_video_player') ||
+      cleanPostHtml.includes('tgme_widget_message_video_player') ||
+      cleanPostHtml.includes('tgme_widget_message_roundvideo_player')
     );
 
     // Extract publication time
@@ -225,9 +278,11 @@ export function parseChannelHtml(html, channelUsername) {
       plainText,
       photos,
       photoUrl: photos[0] || null,
+      videoUrl,
       hasVideo,
       pubDate,
       forwardedFrom,
+      replyTo,
     });
   }
 
@@ -253,8 +308,9 @@ export async function fetchChannelData(channelUsername) {
   const cleanUsername = extractChannelUsername(channelUsername) || channelUsername;
   const canonicalUrl = `https://t.me/s/${cleanUsername}`;
 
-  // 1. Try public Telegram web preview directly (or via mirrors)
+  // 1. Try public Telegram web preview via edge proxy, directly, or mirrors
   const candidateUrls = [
+    `https://slrssbot-poller.darkydaff.workers.dev/channel/${cleanUsername}`,
     canonicalUrl,
     `https://tg.i-c-a.su/rss/${cleanUsername}`,
   ];
@@ -328,11 +384,13 @@ function parseChannelRssFallback(xml, cleanUsername) {
     const imgRegex = /<img[^>]+src=["']([^"']+)["']/gi;
     let m;
     while ((m = imgRegex.exec(rawDesc)) !== null) {
-      if (!photos.includes(m[1])) photos.push(m[1]);
+      const pUrl = normalizeChannelImageUrl(m[1]);
+      if (!photos.includes(pUrl)) photos.push(pUrl);
     }
     const mediaRegex = /<media:content[^>]+url=["']([^"']+)["'][^>]*type=["']image\//gi;
     while ((m = mediaRegex.exec(itemXml)) !== null) {
-      if (!photos.includes(m[1])) photos.push(m[1]);
+      const pUrl = normalizeChannelImageUrl(m[1]);
+      if (!photos.includes(pUrl)) photos.push(pUrl);
     }
 
     const pubDateMatch = itemXml.match(/<pubDate>([^<]+)<\/pubDate>/i);

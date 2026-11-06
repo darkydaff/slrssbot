@@ -1,0 +1,125 @@
+@import "tailwindcss";
+
+@theme {
+  --color-tg-bg: var(--tg-theme-bg-color, #ffffff);
+  --color-tg-text: var(--tg-theme-text-color, #111827);
+  --color-tg-hint: var(--tg-theme-hint-color, #6b7280);
+  --color-tg-link: var(--tg-theme-link-color, #2563eb);
+  --color-tg-button: var(--tg-theme-button-color, #2563eb);
+  --color-tg-button-text: var(--tg-theme-button-text-color, #ffffff);
+  --color-tg-secondary: var(--tg-theme-secondary-bg-color, #f3f4f6);
+  --color-tg-header: var(--tg-theme-header-bg-color, #f9fafb);
+  --color-tg-border: var(--tg-theme-secondary-bg-color, #e5e7eb);
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background-color: var(--tg-theme-bg-color, #ffffff);
+  color: var(--tg-theme-text-color, #111827);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+/* Reader Typography */
+.article-prose {
+  font-size: 1.0625rem;
+  line-height: 1.75;
+  color: var(--tg-theme-text-color, #1f2937);
+  user-select: text;
+}
+
+.article-prose p {
+  margin-top: 1.25em;
+  margin-bottom: 1.25em;
+}
+
+.article-prose h1, .article-prose h2, .article-prose h3, .article-prose h4 {
+  font-weight: 700;
+  color: var(--tg-theme-text-color, #111827);
+  margin-top: 1.5em;
+  margin-bottom: 0.75em;
+}
+
+.article-prose h1 { font-size: 1.5rem; }
+.article-prose h2 { font-size: 1.3rem; }
+.article-prose h3 { font-size: 1.15rem; }
+
+.article-prose a {
+  color: var(--tg-theme-link-color, #2563eb);
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+.article-prose img, .article-prose figure {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+  margin-top: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.article-prose blockquote {
+  border-left: 4px solid var(--tg-theme-button-color, #3b82f6);
+  padding-left: 1rem;
+  font-style: italic;
+  margin: 1.25rem 0;
+  color: var(--tg-theme-hint-color, #4b5563);
+}
+
+.article-prose pre {
+  background-color: var(--tg-theme-secondary-bg-color, #f3f4f6);
+  padding: 0.75rem 1rem;
+  border-radius: 0.375rem;
+  overflow-x: auto;
+  font-size: 0.875rem;
+}
+
+.article-prose code {
+  background-color: var(--tg-theme-secondary-bg-color, #f3f4f6);
+  padding: 0.125rem 0.25rem;
+  border-radius: 0.25rem;
+  font-size: 0.875rem;
+}
+
+.article-prose ul {
+  list-style-type: disc;
+  padding-left: 1.5rem;
+  margin: 1rem 0;
+}
+
+.article-prose ol {
+  list-style-type: decimal;
+  padding-left: 1.5rem;
+  margin: 1rem 0;
+}
+
+/* Ensure gated/hidden content in articles is never hidden by browser */
+.article-prose [hidden] {
+  display: block !important;
+}
+
+/* Hide subscription gates, marketing promos, and affiliate disclaimers in reader */
+.article-prose .first-edition-gate,
+.article-prose .first-edition-gate__card,
+.article-prose .visitor-promo,
+.article-prose .ad-disclaimer-container,
+.article-prose .google-preferred-source-badge {
+  display: none !important;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--tg-theme-hint-color, #cbd5e1);
+  border-radius: 4px;
+}

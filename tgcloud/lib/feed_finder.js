@@ -152,6 +152,19 @@ export function getPlatformFeedCandidates(rawUrl, html = '') {
     candidates.push(`${u.origin}${path}/atom.xml`);
     candidates.push(`${u.origin}/feed`);
     candidates.push(`${u.origin}/rss.xml`);
+
+    // If host doesn't have www, try www variants as fallbacks
+    if (!host.startsWith('www.') && !host.includes('t.me') && !host.endsWith('substack.com')) {
+      const wwwOrigin = `${u.protocol}//www.${host}${u.port ? ':' + u.port : ''}`;
+      candidates.push(`${wwwOrigin}${path}/rss`);
+      candidates.push(`${wwwOrigin}${path}/rss/`);
+      candidates.push(`${wwwOrigin}${path}/feed`);
+      candidates.push(`${wwwOrigin}${path}/feed/`);
+      candidates.push(`${wwwOrigin}/rss`);
+      candidates.push(`${wwwOrigin}/rss/`);
+      candidates.push(`${wwwOrigin}/feed`);
+      candidates.push(`${wwwOrigin}/feed/`);
+    }
   } catch {
     // Ignore invalid URLs
   }
@@ -211,7 +224,7 @@ export async function discoverAndParseFeed(initialUrl) {
       const text = await res.text();
       try {
         const feed = parseFeed(text);
-        return { feedUrl: targetUrl, isTelegram: false, feed, rawText: text, headers: res.headers };
+        return { feedUrl: res.url || targetUrl, isTelegram: false, feed, rawText: text, headers: res.headers };
       } catch {
         // Not directly a feed, extract HTML links
         candidates.push(...extractFeedLinksFromHtml(text, targetUrl));
@@ -234,7 +247,7 @@ export async function discoverAndParseFeed(initialUrl) {
 
       const candText = await candRes.text();
       const feed = parseFeed(candText);
-      return { feedUrl: candidate, feed, rawText: candText, headers: candRes.headers };
+      return { feedUrl: candRes.url || candidate, feed, rawText: candText, headers: candRes.headers };
     } catch {
       // Continue to next candidate
     }

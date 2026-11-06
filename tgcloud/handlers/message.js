@@ -9,11 +9,12 @@
 
 import { api, db, InputFile, BotApiError } from 'sdk';
 import { eq, and } from 'sdk/db';
-import { subscriptions, feedStates, feedEntries } from '../schema.js';
+import { subscriptions, feedStates, feedEntries, chatSettings } from '../schema.js';
 import { discoverAndParseFeed } from '../lib/feed_finder.js';
 import { parseOpml, generateOpml } from '../lib/opml.js';
 import { pollSingleFeed, pollAllFeeds, forcePollFeed } from '../lib/poller.js';
-import { escapeHtml } from '../lib/formatter.js';
+import { escapeHtml, extractCleanSummary } from '../lib/formatter.js';
+import { t, getChatLanguage, SUPPORTED_LANGUAGES, normalizeLanguageCode, registerAllBotCommands } from '../lib/i18n.js';
 
 export default async function (message, ctx) {
   if (!message || !message.chat) return;
@@ -41,11 +42,17 @@ export default async function (message, ctx) {
 
   switch (command) {
     case '/start':
-      await handleStart(chatId);
+      await handleStart(chatId, message.from?.language_code);
       break;
 
     case '/help':
-      await handleHelp(chatId);
+      await handleHelp(chatId, message.from?.language_code);
+      break;
+
+    case '/lang':
+    case '/language':
+    case '/set_lang':
+      await handleLang(chatId, message.from?.language_code, args);
       break;
 
     case '/sub':
@@ -63,7 +70,7 @@ export default async function (message, ctx) {
     case '/poll':
     case '/check':
     case '/force_poll':
-      await handlePoll(chatId, args, command === '/force_poll');
+      await handlePoll(message, args, command === '/force_poll');
       break;
 
     case '/set':
@@ -73,6 +80,23 @@ export default async function (message, ctx) {
 
     case '/export':
       await handleExport(message, args);
+      break;
+
+    case '/reader':
+    case '/app':
+      {
+        const lang = await getChatLanguage(chatId, message.from?.language_code);
+        await api.sendMessage({
+          chat_id: chatId,
+          text: `📖 <b>${t(lang, 'app_title')}</b>\n\n${t(lang, 'welcome_desc')}`,
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: t(lang, 'btn_open_reader'), web_app: { url: 'https://app9057202653.tgcloud.ai' } }],
+            ],
+          },
+        });
+      }
       break;
 
     default:
@@ -90,12 +114,12 @@ export default async function (message, ctx) {
  * Resolve target chat (current chat or specified channel/group).
  * Verifies that the sender and the bot have administrative permissions in the target chat.
  */
-async function resolveTargetChat(message, args) {
+async function resolveTargetChat(message, args, isSubCommand = false) {
   const currentChatId = message.chat.id;
   const fromId = message.from?.id;
 
-  // If user only passed @channel without a feed URL, treat it as a request to follow that public channel
-  if (args.length === 1 && args[0].startsWith('@')) {
+  // If user only passed @channel without a feed URL in /sub, treat it as a request to follow that public channel
+  if (isSubCommand && args.length === 1 && args[0].startsWith('@')) {
     return {
       targetChatId: currentChatId,
       targetTitle: message.chat.title || 'this chat',
@@ -103,15 +127,15 @@ async function resolveTargetChat(message, args) {
     };
   }
 
-  // If user passed a lone chat ID (-100...) without a feed URL
-  if (args.length === 1 && /^-100\d+$/.test(args[0])) {
+  // If user passed a lone chat ID (-100...) without a feed URL for /sub
+  if (isSubCommand && args.length === 1 && /^-100\d+$/.test(args[0])) {
     return {
       error: `ℹ️ <b>Missing Feed URL:</b>\nTo subscribe a channel to an RSS feed, include the feed URL:\n<code>/sub ${escapeHtml(args[0])} &lt;feed_url&gt;</code>`,
     };
   }
 
-  // Check if first argument is a channel handle (@channel) or chat ID (-100...) with a URL following it
-  if (args.length > 1 && (args[0].startsWith('@') || /^-100\d+$/.test(args[0]))) {
+  // Check if first argument is a channel handle (@channel) or chat ID (-100...)
+  if (args.length >= 1 && (args[0].startsWith('@') || /^-100\d+$/.test(args[0]))) {
     const targetIdentifier = args[0];
     const remainingArgs = args.slice(1);
 
@@ -157,7 +181,7 @@ async function resolveTargetChat(message, args) {
     }
   }
 
-  // Subscribing in current chat
+  // Acting in current chat
   return {
     targetChatId: currentChatId,
     targetTitle: message.chat.title || 'this chat',
@@ -166,22 +190,22 @@ async function resolveTargetChat(message, args) {
 }
 
 /**
- * Register bot commands with Telegram so the [/] Menu button works everywhere.
+ * Register bot commands with Telegram so the [/] Menu button works everywhere across all languages.
  */
 async function syncBotCommands() {
   try {
-    await api.setMyCommands({
-      commands: [
-        { command: 'sub', description: 'Subscribe to feed or channel' },
-        { command: 'unsub', description: 'Unsubscribe from a feed' },
-        { command: 'list', description: 'List active subscriptions' },
-        { command: 'set', description: 'Configure delivery mode (Instant View/Photo)' },
-        { command: 'poll', description: 'Check feeds for new posts' },
-        { command: 'force_poll', description: 'Force deliver latest post immediately' },
-        { command: 'export', description: 'Export subscriptions to OPML file' },
-        { command: 'help', description: 'Show complete command guide' },
-      ],
-    });
+    await registerAllBotCommands(api);
+    try {
+      await api.setChatMenuButton({
+        menu_button: {
+          type: 'web_app',
+          text: '📖 Reader',
+          web_app: { url: 'https://app9057202653.tgcloud.ai' },
+        },
+      });
+    } catch {
+      // Ignore if unsupported
+    }
   } catch {
     // Ignore if rate limited or failed
   }
@@ -190,74 +214,130 @@ async function syncBotCommands() {
 /**
  * /start command
  */
-async function handleStart(chatId) {
+async function handleStart(chatId, fromLang = null) {
   // Sync the menu commands with Telegram
   syncBotCommands().catch(() => {});
+  const lang = await getChatLanguage(chatId, fromLang);
 
-  const welcome = `<b>Welcome to RSS to Telegram Bot!</b> 📡
+  const welcome = `${t(lang, 'welcome_title')}
 
-A modern serverless RSS reader powered by Telegram's cloud platform.
+${t(lang, 'welcome_desc')}
 
-✨ <b>Key Capabilities:</b>
-• <b>Auto-Detection:</b> Paste any website or blog link (Substack, WordPress, Medium, GitHub) — the bot finds the feed automatically!
-• <b>Telegram Channels:</b> Follow public Telegram channels via <code>/sub @channel</code>.
-• <b>⚡ Instant View:</b> Reads articles smoothly inside Telegram with native Instant View.
-• <b>📢 Channel Delivery:</b> Send RSS feeds into channels you manage via <code>/sub @your_channel &lt;url&gt;</code>.
-• <b>OPML Import/Export:</b> Send an <code>.opml</code> file to import all feeds at once.
+${t(lang, 'key_features')}
+${t(lang, 'feat_reader')}
+${t(lang, 'feat_autodetect')}
+${t(lang, 'feat_instant_view')}
+${t(lang, 'feat_channel')}
+${t(lang, 'feat_broadcast')}
+${t(lang, 'feat_opml')}
 
-📋 <b>All Commands:</b>
-• <code>/sub &lt;url|@channel&gt;</code> — Subscribe to a feed or Telegram channel
-• <code>/unsub [url]</code> — Unsubscribe (or tap inline button)
-• <code>/list</code> — View active subscriptions with quick actions
-• <code>/set</code> — Toggle delivery mode (⚡ Instant View, 🖼️ Photo Banner, 🔗 Link Only)
-• <code>/poll</code> — Check for new updates
-• <code>/force_poll</code> — Force-send the latest message immediately
-• <code>/export</code> — Export subscriptions as OPML
-• <code>/help</code> — Detailed syntax and examples
-
-<i>Tip: You can also tap the <b>[ / ] Menu</b> button next to the message input to quickly select any command!</i>`;
+${t(lang, 'commands_header')}
+${t(lang, 'cmd_reader')}
+${t(lang, 'cmd_sub')}
+${t(lang, 'cmd_unsub')}
+${t(lang, 'cmd_list')}
+${t(lang, 'cmd_set')}
+${t(lang, 'cmd_lang')}
+${t(lang, 'cmd_poll')}
+${t(lang, 'cmd_force_poll')}
+${t(lang, 'cmd_export')}
+${t(lang, 'cmd_help')}`;
 
   await api.sendMessage({
     chat_id: chatId,
     text: welcome,
     parse_mode: 'HTML',
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: t(lang, 'btn_open_reader'), web_app: { url: 'https://app9057202653.tgcloud.ai' } }],
+        [
+          { text: t(lang, 'btn_my_subs'), callback_data: 'set_list' },
+          { text: t(lang, 'btn_language'), callback_data: 'show_lang' },
+        ],
+        [
+          { text: t(lang, 'btn_help'), callback_data: 'help_info' },
+        ],
+      ],
+    },
   });
 }
 
 /**
  * /help command
  */
-async function handleHelp(chatId) {
-  const help = `📖 <b>RSS to Telegram Bot — Command Guide</b>
+async function handleHelp(chatId, fromLang = null) {
+  const lang = await getChatLanguage(chatId, fromLang);
 
-➕ <b>Subscribe:</b>
-• <code>/sub https://techcrunch.com</code> <i>(Auto-detects WordPress/Atom/RSS)</i>
-• <code>/sub https://godesulloh.substack.com</code> <i>(Auto-detects Substack)</i>
-• <code>/sub @Crimeanwind</code> <i>(Follow a public Telegram channel)</i>
-• <code>/sub @my_channel https://feed-url</code> <i>(Deliver feeds to a channel you own)</i>
+  const help = `${t(lang, 'help_guide_title')}
 
-➖ <b>Unsubscribe:</b>
-• <code>/unsub &lt;url&gt;</code> — Unsubscribe a specific feed
-• <code>/unsub</code> — Interactive inline button list to remove feeds
-• <code>/unsub @my_channel &lt;url&gt;</code> — Remove from a channel
+${t(lang, 'sub_help')}
 
-📋 <b>Manage & Configure:</b>
-• <code>/list</code> — Show active subscriptions with fast unsubscribe buttons
-• <code>/set</code> — Choose between <b>⚡ Instant View</b>, <b>🖼️ Photo Banner</b>, or <b>🔗 Link Only</b>
-• <code>/set @my_channel</code> — Configure delivery mode for a managed channel
+${t(lang, 'unsub_help')}
 
-🔄 <b>Polling & Updates:</b>
-• <code>/poll</code> — Check all feeds for new updates
-• <code>/force_poll</code> <i>(or <code>/poll force</code>)</i> — Force-deliver the latest post right now
-
-📁 <b>OPML Backup:</b>
-• <code>/export</code> — Download your subscriptions as a standard <code>.opml</code> file
-• <b>Import:</b> Send any <code>.opml</code> document directly to this chat to batch import feeds!`;
+${t(lang, 'manage_help')}`;
 
   await api.sendMessage({
     chat_id: chatId,
     text: help,
     parse_mode: 'HTML',
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: t(lang, 'btn_open_reader'), web_app: { url: 'https://app9057202653.tgcloud.ai' } }],
+        [
+          { text: t(lang, 'btn_my_subs'), callback_data: 'set_list' },
+          { text: t(lang, 'btn_language'), callback_data: 'show_lang' },
+        ],
+      ],
+    },
+  });
+}
+
+/**
+ * /lang command (interactive language switcher)
+ */
+async function handleLang(chatId, fromLang = null, args = []) {
+  if (args[0]) {
+    const rawCode = args[0].toLowerCase();
+    const saveLang = rawCode === 'auto' ? 'auto' : normalizeLanguageCode(rawCode);
+
+    await db.insert(chatSettings).values({
+      chatId,
+      lang: saveLang,
+    }).onConflictDoUpdate({
+      target: chatSettings.chatId,
+      set: { lang: saveLang },
+    }).run();
+
+    const activeLang = saveLang === 'auto' ? normalizeLanguageCode(fromLang) : saveLang;
+    const langObj = SUPPORTED_LANGUAGES[activeLang] || SUPPORTED_LANGUAGES.en;
+    await api.sendMessage({
+      chat_id: chatId,
+      text: t(activeLang, 'lang_changed', { lang: `${langObj.flag} ${langObj.native}` }),
+      parse_mode: 'HTML',
+    });
+    return;
+  }
+
+  const lang = await getChatLanguage(chatId, fromLang);
+  const keyboard = [];
+  const entries = Object.entries(SUPPORTED_LANGUAGES);
+  for (let i = 0; i < entries.length; i += 2) {
+    const row = [];
+    const [c1, item1] = entries[i];
+    row.push({ text: `${item1.flag} ${item1.native}`, callback_data: `set_lang:${c1}` });
+    if (entries[i + 1]) {
+      const [c2, item2] = entries[i + 1];
+      row.push({ text: `${item2.flag} ${item2.native}`, callback_data: `set_lang:${c2}` });
+    }
+    keyboard.push(row);
+  }
+  keyboard.push([{ text: t(lang, 'btn_auto_lang'), callback_data: `set_lang:auto` }]);
+
+  await api.sendMessage({
+    chat_id: chatId,
+    text: t(lang, 'choose_lang'),
+    parse_mode: 'HTML',
+    reply_markup: { inline_keyboard: keyboard },
   });
 }
 
@@ -266,8 +346,9 @@ async function handleHelp(chatId) {
  */
 async function handleSub(message, args) {
   const chatId = message.chat.id;
+  const lang = await getChatLanguage(chatId, message.from?.language_code);
 
-  const target = await resolveTargetChat(message, args);
+  const target = await resolveTargetChat(message, args, true);
   if (target.error) {
     await api.sendMessage({ chat_id: chatId, text: target.error, parse_mode: 'HTML' });
     return;
@@ -278,7 +359,7 @@ async function handleSub(message, args) {
   if (remainingArgs.length === 0) {
     await api.sendMessage({
       chat_id: chatId,
-      text: `<b>Usage:</b>\n• <code>/sub &lt;url&gt;</code>\n• <code>/sub @channel &lt;url&gt;</code>\n\n<i>Example:</i>\n<code>/sub https://godesulloh.substack.com/</code>`,
+      text: t(lang, 'sub_usage'),
       parse_mode: 'HTML',
     });
     return;
@@ -287,7 +368,7 @@ async function handleSub(message, args) {
   const rawUrl = remainingArgs[0].trim();
   const statusMsg = await api.sendMessage({
     chat_id: chatId,
-    text: `⏳ Discovering feed for <code>${escapeHtml(rawUrl)}</code>...`,
+    text: t(lang, 'discovering_feed', { url: escapeHtml(rawUrl) }),
     parse_mode: 'HTML',
   });
 
@@ -307,7 +388,7 @@ async function handleSub(message, args) {
       await api.editMessageText({
         chat_id: chatId,
         message_id: statusMsg.message_id,
-        text: `⚠️ <b>Already Subscribed:</b>\n<b>Target:</b> ${escapeHtml(targetTitle)}\n<b>Feed:</b> <code>${escapeHtml(feedUrl)}</code>`,
+        text: t(lang, 'already_subscribed_chat', { target: escapeHtml(targetTitle), url: escapeHtml(feedUrl) }),
         parse_mode: 'HTML',
       });
       return;
@@ -317,6 +398,8 @@ async function handleSub(message, args) {
     await db.insert(feedStates).values({
       feedUrl,
       title: parsedFeed.title,
+      description: parsedFeed.description || null,
+      siteUrl: parsedFeed.link || null,
       etag: discovery.headers?.get('etag'),
       lastModified: discovery.headers?.get('last-modified'),
       lastCheckedAt: new Date(),
@@ -326,21 +409,33 @@ async function handleSub(message, args) {
       target: feedStates.feedUrl,
       set: {
         title: parsedFeed.title,
+        description: parsedFeed.description || null,
+        siteUrl: parsedFeed.link || null,
         lastCheckedAt: new Date(),
         errorCount: 0,
         lastError: null,
       },
     }).run();
 
-    // Mark current entries as seen so we don't spam historical items immediately
+    // Mark current entries as seen and store full content so Mini App reader has initial items ready
     for (const item of (parsedFeed.items || []).slice(0, 30)) {
       const guid = item.guid || item.link || item.title;
       if (guid) {
+        const itemBody = item.content || item.description || '';
+        const itemSummary = extractCleanSummary(itemBody);
+        const itemLeadImg = item.imageUrl || item.enclosure?.url || (item.media?.find(m => m.type?.startsWith('image') || /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(m.url))?.url) || null;
         await db.insert(feedEntries).values({
           feedUrl,
           entryGuid: guid,
+          title: item.title || 'Untitled',
+          link: item.link || '',
+          author: item.author || parsedFeed.title || '',
+          summary: itemSummary,
+          content: itemBody,
+          leadImageUrl: itemLeadImg,
+          media: item.media || [],
           publishedAt: item.pubDate || new Date(),
-        }).onConflictDoNothing({ target: feedEntries.id }).run();
+        }).onConflictDoNothing().run();
       }
     }
 
@@ -384,7 +479,7 @@ async function handleSub(message, args) {
 async function handleUnsub(message, args) {
   const chatId = message.chat.id;
 
-  const target = await resolveTargetChat(message, args);
+  const target = await resolveTargetChat(message, args, false);
   if (target.error) {
     await api.sendMessage({ chat_id: chatId, text: target.error, parse_mode: 'HTML' });
     return;
@@ -424,10 +519,12 @@ async function handleUnsub(message, args) {
     .where(eq(subscriptions.chatId, targetChatId))
     .all();
 
+  const lang = await getChatLanguage(chatId, message.from?.language_code);
+
   if (subs.length === 0) {
     await api.sendMessage({
       chat_id: chatId,
-      text: `No subscriptions found for <b>${escapeHtml(targetTitle)}</b>.`,
+      text: t(lang, 'no_subs_for', { target: escapeHtml(targetTitle) }),
       parse_mode: 'HTML',
     });
     return;
@@ -440,7 +537,7 @@ async function handleUnsub(message, args) {
 
   await api.sendMessage({
     chat_id: chatId,
-    text: `<b>Select a feed to unsubscribe from ${escapeHtml(targetTitle)}:</b>`,
+    text: t(lang, 'select_feed_unsub', { target: escapeHtml(targetTitle) }),
     parse_mode: 'HTML',
     reply_markup: {
       inline_keyboard: keyboard,
@@ -453,8 +550,9 @@ async function handleUnsub(message, args) {
  */
 async function handleList(message, args) {
   const chatId = message.chat.id;
+  const lang = await getChatLanguage(chatId, message.from?.language_code);
 
-  const target = await resolveTargetChat(message, args);
+  const target = await resolveTargetChat(message, args, false);
   if (target.error) {
     await api.sendMessage({ chat_id: chatId, text: target.error, parse_mode: 'HTML' });
     return;
@@ -470,13 +568,13 @@ async function handleList(message, args) {
   if (subs.length === 0) {
     await api.sendMessage({
       chat_id: chatId,
-      text: `📭 <b>No active subscriptions for ${escapeHtml(targetTitle)}.</b>\n\nAdd one using: <code>/sub &lt;url&gt;</code>`,
+      text: t(lang, 'no_subs_for', { target: escapeHtml(targetTitle) }),
       parse_mode: 'HTML',
     });
     return;
   }
 
-  let text = `📋 <b>Subscriptions for ${escapeHtml(targetTitle)} (${subs.length}):</b>\n\n`;
+  let text = t(lang, 'subs_for', { target: escapeHtml(targetTitle), count: subs.length });
   const keyboard = [];
 
   for (let i = 0; i < subs.length; i++) {
@@ -486,7 +584,7 @@ async function handleList(message, args) {
 
     if (i < 8) {
       keyboard.push([
-        { text: `❌ Unsub #${i + 1}`, callback_data: `unsub:${s.id}` },
+        { text: t(lang, 'btn_unsub_num', { num: i + 1 }), callback_data: `unsub:${s.id}` },
       ]);
     }
   }
@@ -502,20 +600,36 @@ async function handleList(message, args) {
 
 /**
  * /poll command (supports /poll force or /force_poll to deliver latest posts)
+ * Also supports /force_poll @channel to deliver latest post to a specific channel.
  */
-async function handlePoll(chatId, args = [], isForceCmd = false) {
-  const isForce = isForceCmd || args[0]?.toLowerCase() === 'force' || args[0]?.toLowerCase() === 'latest';
+async function handlePoll(message, args = [], isForceCmd = false) {
+  const chatId = message.chat.id;
+  let isForce = isForceCmd;
+  const cleanArgs = [...args];
+
+  if (!isForce && (cleanArgs[0]?.toLowerCase() === 'force' || cleanArgs[0]?.toLowerCase() === 'latest')) {
+    isForce = true;
+    cleanArgs.shift();
+  }
+
+  const target = await resolveTargetChat(message, cleanArgs, false);
+  if (target.error) {
+    await api.sendMessage({ chat_id: chatId, text: target.error, parse_mode: 'HTML' });
+    return;
+  }
+
+  const { targetChatId, targetTitle } = target;
 
   if (isForce) {
     const subs = await db.select()
       .from(subscriptions)
-      .where(and(eq(subscriptions.chatId, chatId), eq(subscriptions.paused, false)))
+      .where(and(eq(subscriptions.chatId, targetChatId), eq(subscriptions.paused, false)))
       .all();
 
     if (subs.length === 0) {
       await api.sendMessage({
         chat_id: chatId,
-        text: `📭 No active subscriptions to force poll in this chat. Add one with <code>/sub &lt;url&gt;</code>`,
+        text: `📭 No active subscriptions to force poll for <b>${escapeHtml(targetTitle)}</b>. Add one with <code>/sub &lt;url&gt;</code>`,
         parse_mode: 'HTML',
       });
       return;
@@ -523,7 +637,7 @@ async function handlePoll(chatId, args = [], isForceCmd = false) {
 
     const msg = await api.sendMessage({
       chat_id: chatId,
-      text: `⚡ <b>Force Polling:</b> Fetching the latest posts from your subscriptions...`,
+      text: `⚡ <b>Force Polling:</b> Fetching the latest posts for <b>${escapeHtml(targetTitle)}</b>...`,
       parse_mode: 'HTML',
     });
 
@@ -531,7 +645,7 @@ async function handlePoll(chatId, args = [], isForceCmd = false) {
     const errors = [];
 
     for (const sub of subs) {
-      const res = await forcePollFeed(sub.feedUrl, chatId, 1);
+      const res = await forcePollFeed(sub.feedUrl, targetChatId, 1);
       if (res.error) {
         errors.push(`${sub.customTitle || sub.feedUrl}: ${res.error}`);
       } else {
@@ -539,9 +653,9 @@ async function handlePoll(chatId, args = [], isForceCmd = false) {
       }
     }
 
-    let report = `⚡ <b>Force Poll Complete:</b> Delivered <b>${sentTotal}</b> latest post(s) into this chat.`;
+    let report = `⚡ <b>Force Poll Complete:</b> Delivered <b>${sentTotal}</b> latest post(s) into <b>${escapeHtml(targetTitle)}</b>.`;
     if (errors.length > 0) {
-      report += `\n⚠️ <i>${errors.length} feeds had errors fetching.</i>`;
+      report += `\n\n⚠️ <b>Errors:</b>\n` + errors.map((e) => `• <code>${escapeHtml(e)}</code>`).join('\n');
     }
 
     await api.editMessageText({
@@ -584,13 +698,14 @@ async function handlePoll(chatId, args = [], isForceCmd = false) {
 async function handleSet(message, args) {
   const chatId = message.chat.id;
 
-  const target = await resolveTargetChat(message, args);
+  const target = await resolveTargetChat(message, args, false);
   if (target.error) {
     await api.sendMessage({ chat_id: chatId, text: target.error, parse_mode: 'HTML' });
     return;
   }
 
   const { targetChatId, targetTitle } = target;
+  const lang = await getChatLanguage(chatId, message.from?.language_code);
 
   const subs = await db.select()
     .from(subscriptions)
@@ -600,7 +715,7 @@ async function handleSet(message, args) {
   if (subs.length === 0) {
     await api.sendMessage({
       chat_id: chatId,
-      text: `📭 No active subscriptions for ${escapeHtml(targetTitle)}. Add one with <code>/sub &lt;url&gt;</code>`,
+      text: t(lang, 'no_subs_for', { target: escapeHtml(targetTitle) }),
       parse_mode: 'HTML',
     });
     return;
@@ -613,7 +728,7 @@ async function handleSet(message, args) {
 
   await api.sendMessage({
     chat_id: chatId,
-    text: `⚙️ <b>Configure Delivery Mode for ${escapeHtml(targetTitle)}:</b>\nSelect a subscription to choose between <b>⚡ Instant View</b>, <b>🖼️ Photo Banner</b>, or <b>🔗 Link Only</b>:`,
+    text: t(lang, 'feed_delivery_mode'),
     parse_mode: 'HTML',
     reply_markup: {
       inline_keyboard: keyboard,
@@ -627,7 +742,7 @@ async function handleSet(message, args) {
 async function handleExport(message, args) {
   const chatId = message.chat.id;
 
-  const target = await resolveTargetChat(message, args);
+  const target = await resolveTargetChat(message, args, false);
   if (target.error) {
     await api.sendMessage({ chat_id: chatId, text: target.error, parse_mode: 'HTML' });
     return;
@@ -665,9 +780,19 @@ async function handleExport(message, args) {
 async function handleOpmlUpload(message, doc) {
   const chatId = message.chat.id;
 
+  const captionArgs = (message.caption || '').trim().split(/\s+/).filter(Boolean);
+  const target = await resolveTargetChat(message, captionArgs, false);
+  if (target.error) {
+    await api.sendMessage({ chat_id: chatId, text: target.error, parse_mode: 'HTML' });
+    return;
+  }
+
+  const { targetChatId, targetTitle } = target;
+
   const statusMsg = await api.sendMessage({
     chat_id: chatId,
-    text: `📥 Reading and importing OPML file...`,
+    text: `📥 Reading and importing OPML file for <b>${escapeHtml(targetTitle)}</b>...`,
+    parse_mode: 'HTML',
   });
 
   try {
@@ -688,12 +813,12 @@ async function handleOpmlUpload(message, doc) {
     for (const f of feeds) {
       const existing = await db.select()
         .from(subscriptions)
-        .where(and(eq(subscriptions.chatId, chatId), eq(subscriptions.feedUrl, f.xmlUrl)))
+        .where(and(eq(subscriptions.chatId, targetChatId), eq(subscriptions.feedUrl, f.xmlUrl)))
         .get();
 
       if (!existing) {
         await db.insert(subscriptions).values({
-          chatId,
+          chatId: targetChatId,
           feedUrl: f.xmlUrl,
           customTitle: f.title || f.xmlUrl,
         }).run();
@@ -707,7 +832,7 @@ async function handleOpmlUpload(message, doc) {
     await api.editMessageText({
       chat_id: chatId,
       message_id: statusMsg.message_id,
-      text: `✅ <b>OPML Import Completed:</b>\n• Discovered: ${feeds.length}\n• Successfully imported: ${importedCount}`,
+      text: `✅ <b>OPML Import Completed for ${escapeHtml(targetTitle)}:</b>\n• Discovered: ${feeds.length}\n• Successfully imported: ${importedCount}`,
       parse_mode: 'HTML',
     });
   } catch (err) {

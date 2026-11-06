@@ -3,6 +3,8 @@
  * Can be triggered via Mini App or npx tgcloud run endpoints/poll '{}'.
  */
 
+import { db } from 'sdk';
+import { subscriptions } from '../schema.js';
 import { pollAllFeeds } from '../lib/poller.js';
 
 export default async function (input, ctx) {

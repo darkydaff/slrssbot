@@ -40,6 +40,14 @@ test('cleanWidgetTextHtml cleans up onclick dialogs and standardizes HTML', () =
   assert.ok(cleaned.includes('<a href="https://example.com">this site</a>'));
   assert.ok(!cleaned.includes('onclick'));
   assert.ok(cleaned.includes('\n'));
+
+  // Test HTML entity decoding: &#33; -> !, &quot; -> "
+  const rawEntities = '<b>15(&#33;) из 38 НПЗ</b> <blockquote expandable>&quot;Завтра по талонам&quot;</blockquote>';
+  const cleanedEntities = cleanWidgetTextHtml(rawEntities);
+  assert.ok(cleanedEntities.includes('15(!) из 38 НПЗ'));
+  assert.ok(cleanedEntities.includes('"Завтра по талонам"'));
+  assert.ok(!cleanedEntities.includes('&#33;'));
+  assert.ok(!cleanedEntities.includes('&quot;'));
 });
 
 test('parseChannelHtml extracts posts, media, and forwarded info', () => {
@@ -85,7 +93,8 @@ test('parseChannelHtml extracts posts, media, and forwarded info', () => {
   assert.equal(p1.id, 112060);
   assert.equal(p1.url, 'https://t.me/Crimeanwind/112060');
   assert.equal(p1.photos.length, 1);
-  assert.equal(p1.photoUrl, 'https://cdn.telesco.pe/file/photo1.jpg');
+  assert.ok(p1.photoUrl.includes('photo1.jpg'));
+  assert.ok(p1.photoUrl.includes('image-proxy'));
   assert.ok(p1.textHtml.includes('<b>bold</b>'));
   assert.equal(p1.forwardedFrom, null);
 
@@ -171,4 +180,168 @@ test('parseChannelHtml and formatChannelPost handle multi-photo albums and video
   assert.ok(fmtVideo.text.includes('Watch Video in Telegram'));
   assert.ok(fmtVideo.replyMarkup?.inline_keyboard?.[0]?.[0]?.text?.includes('Watch Video'));
 });
+
+test('parseChannelHtml extracts playable video URL and enables canSendVideo', () => {
+  const videoPostHtml = `
+    <div class="tgme_widget_message" data-post="ukrscanlate/1832">
+      <div class="tgme_widget_message_bubble">
+        <a class="tgme_widget_message_video_player js-message_video_player" href="https://t.me/ukrscanlate/1832">
+          <i class="tgme_widget_message_video_thumb" style="background-image:url('https://cdn4.telesco.pe/file/thumb.jpg')"></i>
+        </a>
+        <video src="https://cdn4.telesco.pe/file/bodycam_video.mp4?token=xyz"></video>
+        <div class="tgme_widget_message_text js-message_text">Bodycam footage from front line.</div>
+        <time datetime="2026-11-04T10:10:31.000Z">10:10</time>
+      </div>
+    </div>
+  `;
+
+  const parsed = parseChannelHtml(videoPostHtml, 'ukrscanlate');
+  assert.equal(parsed.posts.length, 1);
+  const post = parsed.posts[0];
+  assert.equal(post.hasVideo, true);
+  assert.ok(post.videoUrl);
+  assert.ok(post.videoUrl.includes('image-proxy'));
+  assert.ok(post.videoUrl.includes('bodycam_video.mp4'));
+
+  const formatted = formatChannelPost(post, 'Підслухано сканлейт');
+  assert.equal(formatted.canSendVideo, true);
+  assert.equal(formatted.videoUrl, post.videoUrl);
+  assert.ok(formatted.text.includes('Bodycam footage'));
+});
+
+test('formatChannelPost generates dual Instant View and Channel buttons when telegraphUrl is provided', () => {
+  const post = {
+    id: 999,
+    channel: 'durov',
+    url: 'https://t.me/durov/999',
+    textHtml: 'Detailed analytical post by Telegram founder about future of digital freedom...',
+    plainText: 'Detailed analytical post by Telegram founder about future of digital freedom...',
+    photos: [],
+    photoUrl: null,
+    hasVideo: false,
+    forwardedFrom: null,
+  };
+
+  const formatted = formatChannelPost(post, 'Du Rove', {
+    telegraphUrl: 'https://telegra.ph/durov-future-01-01',
+  });
+
+  assert.ok(formatted.text.includes('⚡ <a href="https://telegra.ph/durov-future-01-01">Instant View</a>'));
+  assert.ok(formatted.text.includes('🔗 <a href="https://t.me/durov/999">View in Telegram</a>'));
+
+  // Verify inline buttons
+  const buttons = formatted.replyMarkup?.inline_keyboard;
+  assert.ok(Array.isArray(buttons));
+  assert.equal(buttons[0][0].text, '⚡ Instant View');
+  assert.equal(buttons[0][0].url, 'https://telegra.ph/durov-future-01-01');
+  assert.equal(buttons[0][1].text, '📢 Channel Post');
+  assert.equal(buttons[0][1].url, 'https://t.me/durov/999');
+});
+
+test('parseChannelHtml and formatChannelPost correctly handle reply-to posts without mixing text and media', () => {
+  const replyScenarioHtml = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta property="og:title" content="Крымский ветер">
+      </head>
+      <body>
+        <!-- Post 112175: Initial post without reply -->
+        <div class="tgme_widget_message text_not_supported_wrap js-widget_message" data-post="Crimeanwind/112175">
+          <div class="tgme_widget_message_bubble">
+            <div class="tgme_widget_message_author accent_color">
+              <a class="tgme_widget_message_owner_name" href="https://t.me/Crimeanwind"><span>Крымский ветер</span></a>
+            </div>
+            <div class="tgme_widget_message_text js-message_text">❌💡В Симферополе, Севастополе и Ялте около 14.00 полностью пропал свет, сообщают подписчики</div>
+            <time datetime="2026-11-05T12:00:00+00:00">14:00</time>
+          </div>
+        </div>
+
+        <!-- Post 112177: Reply to 112175 with its own photo and UPD text -->
+        <div class="tgme_widget_message text_not_supported_wrap js-widget_message" data-post="Crimeanwind/112177">
+          <div class="tgme_widget_message_bubble">
+            <div class="tgme_widget_message_author accent_color">
+              <a class="tgme_widget_message_owner_name" href="https://t.me/Crimeanwind"><span>Крымский ветер</span></a>
+            </div>
+            <a class="tgme_widget_message_reply" href="https://t.me/Crimeanwind/112175">
+              <i class="tgme_widget_message_reply_thumb" style="background-image:url('https://cdn.telesco.pe/file/old_thumb.jpg')"></i>
+              <span class="tgme_widget_message_author_name">Крымский ветер</span>
+              <div class="tgme_widget_message_text js-message_reply_text">❌💡В Симферополе, Севастополе и Ялте около 14.00 полностью пропал свет, сообщают подписчики</div>
+            </a>
+            <a class="tgme_widget_message_photo_wrap photo_wrap" style="background-image:url('https://cdn.telesco.pe/file/photo112177.jpg')"></a>
+            <div class="tgme_widget_message_text js-message_text">UPD А также: Красноперекопск Саки Бахчисарай Симферопольский район Алушта</div>
+            <time datetime="2026-11-05T12:30:00+00:00">14:30</time>
+          </div>
+        </div>
+
+        <!-- Post 112178: Reply to 112177 with Aksenov photo and statement -->
+        <div class="tgme_widget_message text_not_supported_wrap js-widget_message" data-post="Crimeanwind/112178">
+          <div class="tgme_widget_message_bubble">
+            <div class="tgme_widget_message_author accent_color">
+              <a class="tgme_widget_message_owner_name" href="https://t.me/Crimeanwind"><span>Крымский ветер</span></a>
+            </div>
+            <a class="tgme_widget_message_reply" href="https://t.me/Crimeanwind/112177">
+              <i class="tgme_widget_message_reply_thumb" style="background-image:url('https://cdn.telesco.pe/file/photo112177.jpg')"></i>
+              <span class="tgme_widget_message_author_name">Крымский ветер</span>
+              <div class="tgme_widget_message_text js-message_reply_text">UPD А также: Красноперекопск Саки Бахчисарай...</div>
+            </a>
+            <a class="tgme_widget_message_photo_wrap photo_wrap" style="background-image:url('https://cdn.telesco.pe/file/aksenov_photo.jpg')"></a>
+            <div class="tgme_widget_message_text js-message_text">Гауляйтер Аксенов доложил об очередной "аварии на магистральных энергосетях" за пределами Крыма. "С завтрашнего дня введем электричество по талонам, как было с бензином", - добавил он.</div>
+            <time datetime="2026-11-05T13:00:00+00:00">15:00</time>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+
+  const parsed = parseChannelHtml(replyScenarioHtml, 'Crimeanwind');
+  assert.equal(parsed.posts.length, 3);
+
+  // Post 112175
+  const p1 = parsed.posts[0];
+  assert.equal(p1.id, 112175);
+  assert.equal(p1.replyTo, null);
+  assert.ok(p1.plainText.includes('полностью пропал свет'));
+  assert.equal(p1.photos.length, 0);
+
+  // Post 112177: Must NOT have 112175's text as its own text, and must NOT have old_thumb as its photo!
+  const p2 = parsed.posts[1];
+  assert.equal(p2.id, 112177);
+  assert.ok(p2.replyTo);
+  assert.equal(p2.replyTo.url, 'https://t.me/Crimeanwind/112175');
+  assert.equal(p2.replyTo.author, 'Крымский ветер');
+  assert.ok(p2.replyTo.text.includes('полностью пропал свет'));
+
+  // Post 112177 own content
+  assert.ok(p2.plainText.startsWith('UPD А также: Красноперекопск'));
+  assert.ok(!p2.plainText.includes('полностью пропал свет')); // Should NOT contain reply quote text!
+  assert.equal(p2.photos.length, 1);
+  assert.ok(p2.photos[0].includes('photo112177.jpg'));
+  assert.ok(!p2.photos[0].includes('old_thumb.jpg')); // Reply thumb must be excluded!
+
+  const fmtP2 = formatChannelPost(p2, 'Крымский ветер');
+  assert.ok(fmtP2.text.includes('↩️ In reply to <a href="https://t.me/Crimeanwind/112175">Post #112175</a>'));
+  assert.ok(fmtP2.text.includes('UPD А также: Красноперекопск'));
+  assert.ok(!fmtP2.text.includes('полностью пропал свет'));
+
+  // Post 112178: Must have Aksenov text and photo, NOT 112177's UPD text or 112177's photo!
+  const p3 = parsed.posts[2];
+  assert.equal(p3.id, 112178);
+  assert.ok(p3.replyTo);
+  assert.equal(p3.replyTo.url, 'https://t.me/Crimeanwind/112177');
+  assert.ok(p3.replyTo.text.includes('UPD А также: Красноперекопск'));
+
+  // Post 112178 own content
+  assert.ok(p3.plainText.includes('Гауляйтер Аксенов доложил'));
+  assert.ok(!p3.plainText.includes('Красноперекопск')); // Must NOT contain reply quote!
+  assert.equal(p3.photos.length, 1);
+  assert.ok(p3.photos[0].includes('aksenov_photo.jpg'));
+  assert.ok(!p3.photos[0].includes('photo112177.jpg')); // Must NOT contain reply photo!
+
+  const fmtP3 = formatChannelPost(p3, 'Крымский ветер');
+  assert.ok(fmtP3.text.includes('↩️ In reply to <a href="https://t.me/Crimeanwind/112177">Post #112177</a>'));
+  assert.ok(fmtP3.text.includes('Гауляйтер Аксенов доложил'));
+  assert.ok(!fmtP3.text.includes('Красноперекопск'));
+});
+
 
