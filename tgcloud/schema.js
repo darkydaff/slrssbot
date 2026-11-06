@@ -6,6 +6,7 @@ export const subscriptions = table('subscriptions', {
   chatId: integer('chat_id').notNull(),
   feedUrl: text('feed_url').notNull(),
   customTitle: text('custom_title'),
+  category: text('category').default('General'),
   sendMode: text('send_mode').default('default'), // 'default', 'link_only', 'telegraph', 'photo'
   filterInclude: text('filter_include'),
   filterExclude: text('filter_exclude'),
@@ -15,6 +16,7 @@ export const subscriptions = table('subscriptions', {
   chatFeedIdx: uniqueIndex('uidx_subscriptions_chat_feed').on(t.chatId, t.feedUrl),
   feedUrlIdx: index('idx_subscriptions_feed_url').on(t.feedUrl),
   chatIdIdx: index('idx_subscriptions_chat_id').on(t.chatId),
+  chatCategoryIdx: index('idx_subscriptions_chat_category').on(t.chatId, t.category),
 }));
 
 // 2. Feed Metadata & HTTP Cache States
@@ -73,6 +75,7 @@ export const chatSettings = table('chat_settings', {
   lang: text('lang').default('en'),
   enablePreview: boolean('enable_preview').default(true),
   displayTemplate: text('display_template'),
+  apiKey: text('api_key'),
 });
 
 // 6. Global Bot Config (e.g. Telegraph account token)

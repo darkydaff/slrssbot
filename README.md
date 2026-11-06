@@ -23,7 +23,9 @@ RSS, Atom, JSON Feed, and Telegram channel syndication bot and Mini App running 
 | **Atom Syndication** | RFC 4287 | Atom 1.0 XML parsing (`feed`, `entry`, `link`, `author`, `summary`, `content`). |
 | **RSS Syndication** | RSS 2.0 Specification | RSS 0.9x / 1.0 / 2.0 XML parsing (`channel`, `item`, `enclosure`, `guid`, `pubDate`). |
 | **JSON Feed** | JSON Feed 1.1 | JSON Feed parsing (`items`, `attachments`, `author`). |
-| **Subscription Outline** | OPML 2.0 | XML outline import and export (`opml`, `outline`). |
+| **Subscription Outline** | OPML 2.0 | Hierarchical XML outline import and export with nested folder categories (`opml`, `outline`). |
+| **Fever API** | Fever API v3 | Standard Fever sync protocol endpoint for external desktop and mobile RSS clients. |
+| **Google Reader API** | Google Reader / FreshRSS API | Standard GReader sync protocol endpoints for external reader apps (`subscription/list`, `edit-tag`, `stream/contents`). |
 | **HTTP Conditional Requests** | RFC 7232 | `ETag`, `If-None-Match`, `Last-Modified`, and `If-Modified-Since` cache validation. |
 
 ## Command Reference
@@ -50,11 +52,14 @@ The Mini App interacts with the backend via `POST /api/<name>` using Telegram We
 
 | Endpoint | Method | Request Payload | Response |
 | :--- | :--- | :--- | :--- |
-| `/api/get_articles` | POST | `{ filter: "all"\|"unread"\|"starred", feedUrl?, search?, limit?, offset? }` | `{ articles: Article[], total: number }` |
+| `/api/get_articles` | POST | `{ filter: "all"\|"unread"\|"starred", feedUrl?, category?, search?, limit?, offset? }` | `{ articles: Article[], total: number }` |
 | `/api/get_article` | POST | `{ id: number }` | `{ article: Article }` |
 | `/api/set_article_state` | POST | `{ entryId?, isRead?, isStarred?, markAllRead? }` | `{ ok: boolean }` |
-| `/api/get_feeds` | POST | `{}` | `{ feeds: Feed[], stats: Stats }` |
-| `/api/manage_feed` | POST | `{ action: "sub"\|"unsub"\|"pause"\|"resume"\|"set_mode"\|"set_lang", ... }` | Action-dependent result |
+| `/api/get_feeds` | POST | `{}` | `{ feeds: Feed[], categories: Category[], stats: Stats, apiKey: string }` |
+| `/api/manage_feed` | POST | `{ action: "sub"\|"unsub"\|"pause"\|"resume"\|"set_mode"\|"set_lang"\|"generate_api_key"\|"export_opml"\|"import_opml", ... }` | Action-dependent result |
+| `/api/backup` | POST | `{ action: "export"\|"import", backupData? }` | Full data backup / restore payload |
+| `/api/fever` | ANY | Fever v3 query params or body | Standard Fever envelope |
+| `/api/greader` | ANY | Google Reader action & stream query params | Standard GReader envelope |
 | `/api/poll` | POST | `{}` | `{ results: PollResult[] }` |
 
 ## Database Schema

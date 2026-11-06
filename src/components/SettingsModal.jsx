@@ -1,5 +1,22 @@
-import React from 'react';
-import { X, User, Rss, CheckCircle2, Star, FileText, Send, Sparkles, Globe } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import {
+  X,
+  User,
+  Rss,
+  CheckCircle2,
+  Star,
+  FileText,
+  Send,
+  Sparkles,
+  Globe,
+  Download,
+  Upload,
+  Key,
+  Copy,
+  Check,
+  RefreshCw,
+  FolderSync,
+} from 'lucide-react';
 import { getTelegramUser, openExternalLink, hapticFeedback } from '../lib/telegram.js';
 import { useI18n } from '../lib/i18n.js';
 import { callApi } from '../lib/api.js';
@@ -8,11 +25,29 @@ export function SettingsModal({
   isOpen,
   onClose,
   stats = { totalFeeds: 0, totalUnread: 0, totalStarred: 0 },
+  apiKey: initialApiKey = null,
+  onFeedsUpdated,
 }) {
   if (!isOpen) return null;
 
   const user = getTelegramUser();
   const { t, lang, setLang, setAutoLang, isAuto, supportedLanguages } = useI18n();
+
+  const [apiKey, setApiKey] = useState(initialApiKey);
+  const [isGeneratingKey, setIsGeneratingKey] = useState(false);
+  const [copiedField, setCopiedField] = useState(null);
+  const [syncStatusMsg, setSyncStatusMsg] = useState(null);
+  const [isProcessingFile, setIsProcessingFile] = useState(false);
+
+  useEffect(() => {
+    if (!apiKey) {
+      callApi('manage_feed', { action: 'get_api_key' })
+        .then((res) => {
+          if (res?.apiKey) setApiKey(res.apiKey);
+        })
+        .catch(() => {});
+    }
+  }, [apiKey]);
 
   const handleLanguageChange = (e) => {
     const val = e.target.value;
@@ -25,6 +60,140 @@ export function SettingsModal({
       callApi('manage_feed', { action: 'set_lang', lang: val }).catch(() => {});
     }
   };
+
+  const handleGenerateApiKey = async () => {
+    setIsGeneratingKey(true);
+    hapticFeedback('medium');
+    try {
+      const res = await callApi('manage_feed', { action: 'generate_api_key' });
+      if (res?.apiKey) {
+        setApiKey(res.apiKey);
+        hapticFeedback('success');
+      }
+    } catch (err) {
+      hapticFeedback('error');
+    } finally {
+      setIsGeneratingKey(false);
+    }
+  };
+
+  const handleCopy = (text, fieldName) => {
+    hapticFeedback('light');
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text);
+    }
+    setCopiedField(fieldName);
+    setTimeout(() => setCopiedField(null), 1800);
+  };
+
+  // 1. Export OPML
+  const handleExportOpml = async () => {
+    hapticFeedback('medium');
+    try {
+      setSyncStatusMsg('Generating OPML...');
+      const res = await callApi('manage_feed', { action: 'export_opml' });
+      if (res?.opmlXml) {
+        const blob = new Blob([res.opmlXml], { type: 'text/x-opml' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `slrss_subscriptions_${new Date().toISOString().slice(0, 10)}.opml`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        hapticFeedback('success');
+        setSyncStatusMsg('OPML exported successfully!');
+      }
+    } catch (err) {
+      hapticFeedback('error');
+      setSyncStatusMsg(`Export failed: ${err.message}`);
+    } finally {
+      setTimeout(() => setSyncStatusMsg(null), 3000);
+    }
+  };
+
+  // 2. Import OPML File
+  const handleImportOpmlFile = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsProcessingFile(true);
+    setSyncStatusMsg('Importing OPML...');
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const xml = event.target?.result;
+        const res = await callApi('manage_feed', { action: 'import_opml', opmlXml: xml });
+        hapticFeedback('success');
+        setSyncStatusMsg(`Imported ${res?.importedCount || 0} feeds!`);
+        if (onFeedsUpdated) onFeedsUpdated();
+      } catch (err) {
+        hapticFeedback('error');
+        setSyncStatusMsg(`Import failed: ${err.message}`);
+      } finally {
+        setIsProcessingFile(false);
+        setTimeout(() => setSyncStatusMsg(null), 3000);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  // 3. Export JSON Backup
+  const handleExportBackup = async () => {
+    hapticFeedback('medium');
+    try {
+      setSyncStatusMsg('Generating JSON backup...');
+      const backupData = await callApi('backup', { action: 'export' });
+      const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `slrss_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      hapticFeedback('success');
+      setSyncStatusMsg('Backup JSON downloaded!');
+    } catch (err) {
+      hapticFeedback('error');
+      setSyncStatusMsg(`Backup failed: ${err.message}`);
+    } finally {
+      setTimeout(() => setSyncStatusMsg(null), 3000);
+    }
+  };
+
+  // 4. Restore JSON Backup
+  const handleRestoreBackupFile = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsProcessingFile(true);
+    setSyncStatusMsg('Restoring backup...');
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const rawJson = event.target?.result;
+        const parsed = JSON.parse(rawJson);
+        const res = await callApi('backup', { action: 'import', backupData: parsed });
+        hapticFeedback('success');
+        setSyncStatusMsg(`Restored ${res?.subscriptionsImported || 0} feeds, ${res?.statesRestored || 0} articles!`);
+        if (onFeedsUpdated) onFeedsUpdated();
+      } catch (err) {
+        hapticFeedback('error');
+        setSyncStatusMsg(`Restore failed: ${err.message}`);
+      } finally {
+        setIsProcessingFile(false);
+        setTimeout(() => setSyncStatusMsg(null), 3500);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  const appDomain = window.location.origin;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
@@ -103,36 +272,140 @@ export function SettingsModal({
             </select>
           </div>
 
-          {/* Quick Tips */}
-          <div className="space-y-2.5 text-xs text-tg-hint bg-tg-secondary/40 p-4 rounded-xl border border-tg-border">
-            <div className="flex items-start gap-2">
-              <Sparkles className="w-4 h-4 text-tg-button shrink-0 mt-0.5" />
-              <div>
-                <span className="font-semibold text-tg-text">{t('tip_iv_label')}</span> {t('tip_iv')}
+          {/* OPML & Data Management */}
+          <div className="p-3.5 rounded-xl bg-tg-secondary border border-tg-border space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-xs text-tg-text flex items-center gap-1.5">
+                <FileText className="w-4 h-4 text-emerald-600" />
+                Data & Subscriptions
+              </span>
+            </div>
+
+            {syncStatusMsg && (
+              <div className="p-2 rounded-lg bg-tg-bg text-xs font-medium text-tg-button border border-tg-border text-center">
+                {syncStatusMsg}
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <button
+                type="button"
+                onClick={handleExportOpml}
+                disabled={isProcessingFile}
+                className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-tg-bg text-tg-text font-semibold border border-tg-border hover:bg-tg-secondary active:scale-95 transition-all"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export OPML</span>
+              </button>
+
+              <label className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-tg-bg text-tg-text font-semibold border border-tg-border hover:bg-tg-secondary active:scale-95 transition-all cursor-pointer">
+                <Upload className="w-3.5 h-3.5" />
+                <span>Import OPML</span>
+                <input
+                  type="file"
+                  accept=".opml,.xml"
+                  onChange={handleImportOpmlFile}
+                  disabled={isProcessingFile}
+                  className="hidden"
+                />
+              </label>
+
+              <button
+                type="button"
+                onClick={handleExportBackup}
+                disabled={isProcessingFile}
+                className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-tg-bg text-tg-text font-semibold border border-tg-border hover:bg-tg-secondary active:scale-95 transition-all"
+              >
+                <Download className="w-3.5 h-3.5 text-blue-500" />
+                <span>Backup JSON</span>
+              </button>
+
+              <label className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-tg-bg text-tg-text font-semibold border border-tg-border hover:bg-tg-secondary active:scale-95 transition-all cursor-pointer">
+                <Upload className="w-3.5 h-3.5 text-blue-500" />
+                <span>Restore JSON</span>
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={handleRestoreBackupFile}
+                  disabled={isProcessingFile}
+                  className="hidden"
+                />
+              </label>
+            </div>
+          </div>
+
+          {/* Fluent Reader & Sync Integration */}
+          <div className="p-3.5 rounded-xl bg-tg-secondary border border-tg-border space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-xs text-tg-text flex items-center gap-1.5">
+                <FolderSync className="w-4 h-4 text-tg-button" />
+                Fluent Reader & Sync APIs
+              </span>
+              <button
+                type="button"
+                onClick={handleGenerateApiKey}
+                disabled={isGeneratingKey}
+                className="text-[11px] font-semibold text-tg-button hover:underline flex items-center gap-1"
+              >
+                <RefreshCw className={`w-3 h-3 ${isGeneratingKey ? 'animate-spin' : ''}`} />
+                <span>Reset Key</span>
+              </button>
+            </div>
+
+            <p className="text-[11px] text-tg-hint leading-relaxed">
+              Connect <b>Fluent Reader</b> (Desktop) or <b>Fluent Reader Lite</b> (Mobile) to slrssbot using standard Fever or Google Reader APIs:
+            </p>
+
+            {/* API Key Field */}
+            <div className="space-y-1">
+              <span className="text-[10px] font-bold text-tg-hint uppercase">API Key / Token</span>
+              <div className="flex items-center gap-1.5 bg-tg-bg p-2 rounded-lg border border-tg-border font-mono text-xs">
+                <span className="flex-1 truncate">{apiKey || 'Generating key...'}</span>
+                {apiKey && (
+                  <button
+                    type="button"
+                    onClick={() => handleCopy(apiKey, 'apiKey')}
+                    className="p-1 rounded text-tg-hint hover:text-tg-text"
+                  >
+                    {copiedField === 'apiKey' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                  </button>
+                )}
               </div>
             </div>
 
-            <div className="flex items-start gap-2">
-              <FileText className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-              <div>
-                <span className="font-semibold text-tg-text">{t('tip_opml_label')}</span> {t('tip_opml')}
+            {/* Endpoints */}
+            <div className="space-y-1 text-xs">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-tg-hint font-medium">Fever API Endpoint:</span>
+                <button
+                  type="button"
+                  onClick={() => handleCopy(`${appDomain}/api/fever`, 'fever')}
+                  className="font-mono text-tg-button flex items-center gap-1 text-[11px] hover:underline"
+                >
+                  {copiedField === 'fever' ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                  <span>/api/fever</span>
+                </button>
               </div>
-            </div>
 
-            <div className="flex items-start gap-2">
-              <Send className="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
-              <div>
-                <span className="font-semibold text-tg-text">{t('tip_channel_label')}</span> {t('tip_channel')}
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-tg-hint font-medium">Google Reader API:</span>
+                <button
+                  type="button"
+                  onClick={() => handleCopy(`${appDomain}/api/greader`, 'greader')}
+                  className="font-mono text-tg-button flex items-center gap-1 text-[11px] hover:underline"
+                >
+                  {copiedField === 'greader' ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                  <span>/api/greader</span>
+                </button>
               </div>
             </div>
           </div>
 
           <div className="text-center pt-1 text-[11px] text-tg-hint font-mono">
-            Telegram Serverless RSS Bot v1.0
+            Telegram Serverless RSS Bot v1.2
           </div>
         </div>
       </div>
     </div>
   );
 }
-

@@ -10,6 +10,8 @@ import { initTelegramApp, hapticFeedback } from './lib/telegram.js';
 
 export function App() {
   const [feeds, setFeeds] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [activeCategory, setActiveCategory] = useState(null);
   const [stats, setStats] = useState({ totalFeeds: 0, totalUnread: 0, totalStarred: 0 });
   const [activeTab, setActiveTab] = useState('unread'); // 'unread' | 'all' | 'starred'
   const [activeFeedUrl, setActiveFeedUrl] = useState(null);
@@ -21,6 +23,17 @@ export function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [offset, setOffset] = useState(0);
+
+  // View Mode: 'card' (rich layout with images) vs 'compact' (dense fast scanning)
+  const [viewMode, setViewMode] = useState(() => {
+    try {
+      return localStorage.getItem('slrss_view_mode') || 'card';
+    } catch {
+      return 'card';
+    }
+  });
+
+  const [apiKey, setApiKey] = useState(null);
 
   // Reader state
   const [currentArticle, setCurrentArticle] = useState(null);
@@ -39,12 +52,18 @@ export function App() {
     initTelegramApp();
   }, []);
 
-  // Fetch Feeds list and global stats
+  // Fetch Feeds list, categories, and global stats
   const fetchFeeds = useCallback(async () => {
     try {
       const data = await callApi('get_feeds');
       if (data?.feeds) {
         setFeeds(data.feeds);
+        if (data.categories) {
+          setCategories(data.categories);
+        }
+        if (data.apiKey) {
+          setApiKey(data.apiKey);
+        }
         if (data.stats) {
           setStats(data.stats);
         }
@@ -58,7 +77,14 @@ export function App() {
 
   // Fetch Articles with pagination and filters
   const fetchArticles = useCallback(
-    async ({ tab = activeTab, feedUrl = activeFeedUrl, search = searchQuery, newOffset = 0, append = false } = {}) => {
+    async ({
+      tab = activeTab,
+      feedUrl = activeFeedUrl,
+      category = activeCategory,
+      search = searchQuery,
+      newOffset = 0,
+      append = false,
+    } = {}) => {
       setLoadingArticles(true);
       if (!append) {
         setArticlesError(null);
@@ -67,6 +93,7 @@ export function App() {
         const res = await callApi('get_articles', {
           filter: tab,
           feedUrl: feedUrl || undefined,
+          category: !feedUrl && category ? category : undefined,
           search: search || undefined,
           limit: 25,
           offset: newOffset,
@@ -92,7 +119,7 @@ export function App() {
         setLoadingArticles(false);
       }
     },
-    [activeTab, activeFeedUrl, searchQuery]
+    [activeTab, activeFeedUrl, activeCategory, searchQuery]
   );
 
   // Initial load
@@ -101,10 +128,26 @@ export function App() {
     fetchArticles({ newOffset: 0, append: false });
   }, [fetchFeeds, fetchArticles]);
 
+  // Toggle View Mode (Card vs Compact)
+  const handleToggleViewMode = () => {
+    const next = viewMode === 'card' ? 'compact' : 'card';
+    setViewMode(next);
+    try {
+      localStorage.setItem('slrss_view_mode', next);
+    } catch {}
+  };
+
   // Handle Tab Switch
   const handleTabChange = (newTab) => {
     setActiveTab(newTab);
     fetchArticles({ tab: newTab, newOffset: 0, append: false });
+  };
+
+  // Handle Category Select
+  const handleCategorySelect = (catName) => {
+    setActiveCategory(catName);
+    setActiveFeedUrl(null);
+    fetchArticles({ category: catName, feedUrl: null, newOffset: 0, append: false });
   };
 
   // Handle Feed Filter Pill selection
@@ -146,7 +189,6 @@ export function App() {
 
   // Toggle Star / Bookmark
   const handleToggleStar = async (articleId, newStarred) => {
-    // Optimistic UI update
     setArticles((prev) =>
       prev.map((a) => (a.id === articleId ? { ...a, isStarred: newStarred } : a))
     );
@@ -161,7 +203,6 @@ export function App() {
     try {
       await callApi('set_article_state', { articleId, isStarred: newStarred });
     } catch {
-      // Revert on error
       fetchFeeds();
     }
   };
@@ -205,7 +246,6 @@ export function App() {
 
   // Open Article in Reader View
   const handleOpenArticle = async (articlePreview) => {
-    // 1. Optimistically mark as read in local state and update unread count
     setArticles((prev) =>
       prev.map((a) => (a.id === articlePreview.id ? { ...a, isRead: true } : a))
     );
@@ -216,7 +256,6 @@ export function App() {
       }));
     }
 
-    // 2. Check if we already have substantive content in local state
     const hasFullContent = Boolean(articlePreview.content && articlePreview.content.length >= 500);
 
     setCurrentArticle({
@@ -227,7 +266,6 @@ export function App() {
     });
     setLoadingArticleContent(!hasFullContent);
 
-    // 3. Request full article from backend (marks read in DB, fetches fresh Telegraph URL & on-demand extraction)
     try {
       const data = await callApi('get_article', { articleId: articlePreview.id });
       if (data?.article) {
@@ -256,13 +294,13 @@ export function App() {
     }
   };
 
-  // Explicit Retry for full article loading without app reload
+  // Retry full article load
   const handleRetryLoadArticle = async (articleId) => {
     const targetId = articleId || currentArticle?.id;
     if (!targetId) return;
 
     setLoadingArticleContent(true);
-    setCurrentArticle((prev) => prev ? { ...prev, isLoadingContent: true, loadError: null } : prev);
+    setCurrentArticle((prev) => (prev ? { ...prev, isLoadingContent: true, loadError: null } : prev));
 
     try {
       const data = await callApi('get_article', { articleId: targetId });
@@ -307,8 +345,8 @@ export function App() {
   const hasNextArticle = currentArticleIndex >= 0 && currentArticleIndex < articles.length - 1;
 
   // Subscribe Feed
-  const handleSubscribeFeed = async ({ url, customTitle, sendMode }) => {
-    await callApi('manage_feed', { action: 'subscribe', url, customTitle, sendMode });
+  const handleSubscribeFeed = async ({ url, customTitle, category, sendMode }) => {
+    await callApi('manage_feed', { action: 'subscribe', url, customTitle, category, sendMode });
     await fetchFeeds();
     await fetchArticles({ newOffset: 0, append: false });
   };
@@ -368,12 +406,17 @@ export function App() {
             activeTab={activeTab}
             onTabChange={handleTabChange}
             feeds={feeds}
+            categories={categories}
+            activeCategory={activeCategory}
+            onCategorySelect={handleCategorySelect}
             activeFeedUrl={activeFeedUrl}
             onFeedSelect={handleFeedSelect}
             searchQuery={searchQuery}
             onSearchChange={handleSearchChange}
             unreadTotal={stats.totalUnread}
             starredTotal={stats.totalStarred}
+            viewMode={viewMode}
+            onToggleViewMode={handleToggleViewMode}
           />
 
           <main>
@@ -393,6 +436,7 @@ export function App() {
               onOpenAddModal={() => setIsAddModalOpen(true)}
               searchQuery={searchQuery}
               activeFeedTitle={activeFeedObj?.title}
+              viewMode={viewMode}
             />
           </main>
         </div>
@@ -418,8 +462,9 @@ export function App() {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         stats={stats}
+        apiKey={apiKey}
+        onFeedsUpdated={fetchFeeds}
       />
     </div>
   );
 }
-

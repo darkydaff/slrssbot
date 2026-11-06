@@ -66,6 +66,7 @@ export default async function (input, ctx) {
       description: state?.description || null,
       siteUrl: state?.siteUrl || null,
       iconUrl: state?.iconUrl || null,
+      category: sub.category || 'General',
       sendMode: sub.sendMode || 'default',
       paused: Boolean(sub.paused),
       lastCheckedAt: state?.lastCheckedAt || null,
@@ -75,6 +76,19 @@ export default async function (input, ctx) {
       unreadCount,
     });
   }
+
+  // Calculate category groups and summary counts
+  const categoryMap = new Map();
+  for (const f of feedResults) {
+    const catName = f.category || 'General';
+    if (!categoryMap.has(catName)) {
+      categoryMap.set(catName, { name: catName, feedCount: 0, unreadCount: 0 });
+    }
+    const cat = categoryMap.get(catName);
+    cat.feedCount++;
+    cat.unreadCount += f.unreadCount;
+  }
+  const categories = Array.from(categoryMap.values()).sort((a, b) => a.name.localeCompare(b.name));
 
   // Count starred articles for this user
   const starredRow = await db.get(
@@ -90,11 +104,13 @@ export default async function (input, ctx) {
 
   return {
     feeds: feedResults,
+    categories,
     stats: {
       totalFeeds: userSubs.length,
       totalUnread,
       totalStarred,
     },
+    apiKey: userSetting?.apiKey || null,
     lang: userSetting?.lang || 'auto',
   };
 }

@@ -1,0 +1,88 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { parseOpml, generateOpml } from '../tgcloud/lib/opml.js';
+import feverEndpoint from '../tgcloud/endpoints/fever.js';
+import greaderEndpoint from '../tgcloud/endpoints/greader.js';
+import backupEndpoint from '../tgcloud/endpoints/backup.js';
+
+test('OPML parser extracts nested folder categories', () => {
+  const opmlWithCategories = `<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head><title>Categorized Feeds</title></head>
+  <body>
+    <outline text="Technology" title="Technology">
+      <outline type="rss" text="Hacker News" title="Hacker News" xmlUrl="https://news.ycombinator.com/rss"/>
+      <outline type="rss" text="Ars Technica" title="Ars Technica" xmlUrl="https://arstechnica.com/feed/"/>
+    </outline>
+    <outline text="Finance" title="Finance">
+      <outline type="rss" text="Bloomberg News" title="Bloomberg News" xmlUrl="https://bloomberg.com/feed"/>
+    </outline>
+    <outline type="rss" text="Standalone Feed" title="Standalone Feed" xmlUrl="https://example.com/rss"/>
+  </body>
+</opml>`;
+
+  const feeds = parseOpml(opmlWithCategories);
+  assert.equal(feeds.length, 4);
+
+  const hn = feeds.find((f) => f.title === 'Hacker News');
+  assert.ok(hn);
+  assert.equal(hn.category, 'Technology');
+
+  const bloomberg = feeds.find((f) => f.title === 'Bloomberg News');
+  assert.ok(bloomberg);
+  assert.equal(bloomberg.category, 'Finance');
+
+  const standalone = feeds.find((f) => f.title === 'Standalone Feed');
+  assert.ok(standalone);
+  assert.equal(standalone.category, 'General');
+
+  // Test OPML generation retains categories
+  const generatedXml = generateOpml(feeds, 'Exported Feeds');
+  assert.ok(generatedXml.includes('<outline text="Technology" title="Technology">'));
+  assert.ok(generatedXml.includes('<outline text="Finance" title="Finance">'));
+  assert.ok(generatedXml.includes('xmlUrl="https://news.ycombinator.com/rss"'));
+});
+
+test('Fever API endpoint handles auth and basic query', async () => {
+  // Test unauthenticated
+  const unauthRes = await feverEndpoint({}, { initData: null });
+  assert.equal(unauthRes.auth, 0);
+
+  // Test authenticated via Telegram context
+  const authCtx = { initData: { user: { id: 777 } } };
+  const authRes = await feverEndpoint({ groups: 1, feeds: 1 }, authCtx);
+  assert.equal(authRes.auth, 1);
+  assert.equal(authRes.api_version, 3);
+  assert.ok(Array.isArray(authRes.groups));
+  assert.ok(Array.isArray(authRes.feeds));
+});
+
+test('Google Reader API endpoint handles token, user-info, and subscription/list', async () => {
+  const authCtx = { initData: { user: { id: 888 } } };
+
+  const tokenRes = await greaderEndpoint({ endpoint: 'token' }, authCtx);
+  assert.ok(tokenRes.token);
+  assert.ok(tokenRes.token.includes('888'));
+
+  const userRes = await greaderEndpoint({ endpoint: 'user-info' }, authCtx);
+  assert.equal(userRes.userId, '888');
+
+  const subsRes = await greaderEndpoint({ endpoint: 'subscription/list' }, authCtx);
+  assert.ok(Array.isArray(subsRes.subscriptions));
+});
+
+test('Backup endpoint exports structured JSON and validates format on import', async () => {
+  const authCtx = { initData: { user: { id: 999 } } };
+
+  const exportRes = await backupEndpoint({ action: 'export' }, authCtx);
+  assert.equal(exportRes.version, 1);
+  assert.ok(Array.isArray(exportRes.subscriptions));
+  assert.ok(Array.isArray(exportRes.readingStates));
+
+  // Invalid import format rejected
+  await assert.rejects(
+    async () => backupEndpoint({ action: 'import', backupData: {} }, authCtx),
+    (err) => err.parameters?.code === 'INVALID_FORMAT'
+  );
+});
+

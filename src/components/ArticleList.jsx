@@ -20,6 +20,7 @@ export function ArticleList({
   onOpenAddModal,
   searchQuery,
   activeFeedTitle,
+  viewMode = 'card',
 }) {
   const { t } = useI18n();
 
@@ -167,6 +168,7 @@ export function ArticleList({
             onOpenArticle={onOpenArticle}
             onToggleStar={onToggleStar}
             onToggleRead={onToggleRead}
+            viewMode={viewMode}
           />
         ))}
       </div>

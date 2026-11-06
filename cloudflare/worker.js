@@ -174,6 +174,41 @@ export async function triggerTelegramCloudPoll(env, fetchImpl = fetch) {
 }
 
 /**
+ * Execute an arbitrary deployed module on Telegram Serverless with custom arguments.
+ */
+export async function runTelegramCloudModule(moduleName, args = {}, env, fetchImpl = fetch) {
+  const { token, appId } = parseTgCloudToken(env?.TGCLOUD_TOKEN);
+  const baseUrl = env?.TG_CLOUD_API_URL || DEFAULT_BASE_URL;
+
+  let sources = cachedSources;
+  if (!sources) {
+    const state = await tgCloudRequest(baseUrl, appId, token, 'GET', '/get', undefined, fetchImpl);
+    if (state?.canonical_modules) {
+      sources = state.canonical_modules;
+      cachedSources = sources;
+      cachedRevision = state.revision;
+    }
+  }
+
+  const runData = await tgCloudRequest(
+    baseUrl,
+    appId,
+    token,
+    'POST',
+    '/run',
+    {
+      module: moduleName,
+      sources,
+      args,
+      ctx: {},
+    },
+    fetchImpl
+  );
+
+  return runData?.result;
+}
+
+/**
  * Verify if an incoming HTTP request is authorized to trigger a manual poll.
  */
 function isAuthorizedRequest(request, url, env) {
@@ -357,6 +392,76 @@ export default {
           },
           { status: 500 }
         );
+      }
+    }
+
+    // Fever API routing (e.g. /fever or /api/fever)
+    if (url.pathname === '/fever' || url.pathname === '/api/fever') {
+      try {
+        const queryArgs = Object.fromEntries(url.searchParams.entries());
+        let bodyArgs = {};
+        if (request.method === 'POST') {
+          const ct = request.headers.get('Content-Type') || '';
+          if (ct.includes('application/json')) {
+            try { bodyArgs = await request.json(); } catch {}
+          } else if (ct.includes('application/x-www-form-urlencoded')) {
+            const formData = await request.formData();
+            bodyArgs = Object.fromEntries(formData.entries());
+          }
+        }
+        const combinedArgs = { ...queryArgs, ...bodyArgs };
+        const result = await runTelegramCloudModule('endpoints/fever', combinedArgs, env);
+        return new Response(JSON.stringify(result || {}), {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+          },
+        });
+      } catch (err) {
+        return Response.json({ ok: false, error: err.message }, { status: 500 });
+      }
+    }
+
+    // Google Reader API ClientLogin
+    if (url.pathname === '/accounts/ClientLogin') {
+      const token = `slrss_${Date.now()}`;
+      return new Response(`SID=none\nLSID=none\nAuth=${token}\n`, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/plain',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    }
+
+    // Google Reader API (/reader/api/0/*)
+    if (url.pathname.startsWith('/reader/api/0/')) {
+      try {
+        const endpoint = url.pathname.replace(/^\/reader\/api\/0\//, '');
+        const queryArgs = Object.fromEntries(url.searchParams.entries());
+        let bodyArgs = {};
+        if (request.method === 'POST') {
+          const ct = request.headers.get('Content-Type') || '';
+          if (ct.includes('application/json')) {
+            try { bodyArgs = await request.json(); } catch {}
+          } else if (ct.includes('application/x-www-form-urlencoded')) {
+            const formData = await request.formData();
+            bodyArgs = Object.fromEntries(formData.entries());
+          }
+        }
+        const authHeader = request.headers.get('Authorization') || '';
+        const combinedArgs = { endpoint, ...queryArgs, ...bodyArgs, authorization: authHeader };
+        const result = await runTelegramCloudModule('endpoints/greader', combinedArgs, env);
+        return new Response(JSON.stringify(result || {}), {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+          },
+        });
+      } catch (err) {
+        return Response.json({ ok: false, error: err.message }, { status: 500 });
       }
     }
 

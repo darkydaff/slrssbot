@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Star, CheckCircle2, Layers, Search, X } from 'lucide-react';
+import { Star, CheckCircle2, Layers, Search, X, LayoutGrid, LayoutList, Folder, FolderOpen } from 'lucide-react';
 import { hapticFeedback } from '../lib/telegram.js';
 import { useI18n } from '../lib/i18n.js';
 
@@ -7,19 +7,29 @@ export function FilterBar({
   activeTab,
   onTabChange,
   feeds = [],
+  categories = [],
+  activeCategory = null,
+  onCategorySelect,
   activeFeedUrl,
   onFeedSelect,
   searchQuery,
   onSearchChange,
   unreadTotal = 0,
   starredTotal = 0,
+  viewMode = 'card',
+  onToggleViewMode,
 }) {
   const [showSearch, setShowSearch] = useState(false);
   const { t } = useI18n();
 
+  // Filter feeds shown in the feed pills row by selected category if any
+  const visibleFeeds = activeCategory
+    ? feeds.filter((f) => (f.category || 'General') === activeCategory)
+    : feeds;
+
   return (
     <div className="bg-tg-bg border-b border-tg-border px-4 py-2 space-y-2.5">
-      {/* 1. Main Navigation Tabs */}
+      {/* 1. Main Navigation Tabs & View Mode & Search */}
       <div className="flex items-center justify-between gap-1">
         <div className="grid grid-cols-3 gap-1 bg-tg-secondary p-1 rounded-xl w-full max-w-sm">
           <button
@@ -83,19 +93,41 @@ export function FilterBar({
           </button>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            hapticFeedback('light');
-            setShowSearch(!showSearch);
-          }}
-          className={`p-2 rounded-lg transition-all ${
-            showSearch || searchQuery ? 'bg-tg-button text-tg-button-text' : 'text-tg-hint hover:bg-tg-secondary'
-          }`}
-          title={t('search_placeholder')}
-        >
-          <Search className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          {/* View Mode Toggle Button */}
+          {onToggleViewMode && (
+            <button
+              type="button"
+              onClick={() => {
+                hapticFeedback('light');
+                onToggleViewMode();
+              }}
+              className="p-2 rounded-lg text-tg-hint hover:text-tg-text hover:bg-tg-secondary transition-all"
+              title={viewMode === 'compact' ? 'Switch to Card View' : 'Switch to Compact View'}
+            >
+              {viewMode === 'compact' ? (
+                <LayoutList className="w-4 h-4 text-tg-button" />
+              ) : (
+                <LayoutGrid className="w-4 h-4" />
+              )}
+            </button>
+          )}
+
+          {/* Search Toggle */}
+          <button
+            type="button"
+            onClick={() => {
+              hapticFeedback('light');
+              setShowSearch(!showSearch);
+            }}
+            className={`p-2 rounded-lg transition-all ${
+              showSearch || searchQuery ? 'bg-tg-button text-tg-button-text' : 'text-tg-hint hover:bg-tg-secondary'
+            }`}
+            title={t('search_placeholder')}
+          >
+            <Search className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* 2. Search Input (Expandable) */}
@@ -122,9 +154,63 @@ export function FilterBar({
         </div>
       )}
 
-      {/* 3. Horizontal Feed Pills */}
-      {feeds.length > 0 && (
-        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1 text-xs">
+      {/* 3. Categories / Folders Row */}
+      {categories && categories.length > 0 && (
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 text-xs">
+          <button
+            type="button"
+            onClick={() => {
+              hapticFeedback('light');
+              onCategorySelect(null);
+            }}
+            className={`whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded-lg font-medium transition-all shrink-0 ${
+              !activeCategory
+                ? 'bg-tg-button text-tg-button-text font-semibold shadow-xs'
+                : 'bg-tg-secondary text-tg-hint hover:text-tg-text'
+            }`}
+          >
+            <Folder className="w-3.5 h-3.5" />
+            <span>{t('all_feeds')}</span>
+          </button>
+
+          {categories.map((cat) => {
+            const isSelected = activeCategory === cat.name;
+            return (
+              <button
+                key={cat.name}
+                type="button"
+                onClick={() => {
+                  hapticFeedback('light');
+                  onCategorySelect(isSelected ? null : cat.name);
+                }}
+                className={`whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded-lg font-medium transition-all shrink-0 ${
+                  isSelected
+                    ? 'bg-tg-button text-tg-button-text font-semibold shadow-xs'
+                    : 'bg-tg-secondary text-tg-hint hover:text-tg-text'
+                }`}
+              >
+                <FolderOpen className="w-3.5 h-3.5" />
+                <span>{cat.name}</span>
+                {cat.unreadCount > 0 && (
+                  <span
+                    className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+                      isSelected
+                        ? 'bg-white/20 text-white'
+                        : 'bg-tg-border text-tg-text font-semibold'
+                    }`}
+                  >
+                    {cat.unreadCount}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 4. Horizontal Feed Pills */}
+      {visibleFeeds.length > 0 && (
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 text-xs">
           <button
             type="button"
             onClick={() => {
@@ -133,14 +219,14 @@ export function FilterBar({
             }}
             className={`whitespace-nowrap px-3 py-1 rounded-full font-medium transition-all shrink-0 ${
               !activeFeedUrl
-                ? 'bg-tg-button text-tg-button-text font-semibold shadow-xs'
-                : 'bg-tg-secondary text-tg-hint hover:text-tg-text'
+                ? 'bg-tg-secondary text-tg-text font-bold border border-tg-border shadow-xs'
+                : 'bg-tg-secondary/70 text-tg-hint hover:text-tg-text'
             }`}
           >
-            {t('all_feeds')}
+            {activeCategory ? `${activeCategory} (All)` : t('all_feeds')}
           </button>
 
-          {feeds.map((feed) => {
+          {visibleFeeds.map((feed) => {
             const isSelected = activeFeedUrl === feed.feedUrl;
             return (
               <button
@@ -172,4 +258,3 @@ export function FilterBar({
     </div>
   );
 }
-

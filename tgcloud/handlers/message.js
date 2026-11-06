@@ -821,6 +821,7 @@ async function handleOpmlUpload(message, doc) {
           chatId: targetChatId,
           feedUrl: f.xmlUrl,
           customTitle: f.title || f.xmlUrl,
+          category: f.category || 'General',
         }).run();
 
         // Queue feed state check

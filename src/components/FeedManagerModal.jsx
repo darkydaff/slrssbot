@@ -10,6 +10,7 @@ import {
   ExternalLink,
   Pause,
   Play,
+  Folder,
 } from 'lucide-react';
 import { hapticFeedback, openExternalLink } from '../lib/telegram.js';
 import { useI18n } from '../lib/i18n.js';
@@ -28,6 +29,7 @@ export function FeedManagerModal({
   const [activeTab, setActiveTab] = useState(initialTab); // 'add' | 'list'
   const [urlInput, setUrlInput] = useState('');
   const [customTitleInput, setCustomTitleInput] = useState('');
+  const [categoryInput, setCategoryInput] = useState('');
   const [sendModeInput, setSendModeInput] = useState('default');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -49,12 +51,14 @@ export function FeedManagerModal({
       await onSubscribeFeed({
         url: urlInput.trim(),
         customTitle: customTitleInput.trim() || undefined,
+        category: categoryInput.trim() || 'General',
         sendMode: sendModeInput,
       });
       hapticFeedback('success');
       setSuccessMsg(t('subscribing'));
       setUrlInput('');
       setCustomTitleInput('');
+      setCategoryInput('');
       setTimeout(() => {
         setSuccessMsg('');
         setActiveTab('list');
@@ -162,6 +166,20 @@ export function FeedManagerModal({
 
               <div>
                 <label className="block text-xs font-semibold text-tg-hint mb-1">
+                  Category / Folder
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Technology, News, Finance, Blogs"
+                  value={categoryInput}
+                  onChange={(e) => setCategoryInput(e.target.value)}
+                  disabled={isSubmitting}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-tg-secondary text-tg-text text-sm border border-transparent focus:border-tg-button focus:outline-hidden transition-all"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-tg-hint mb-1">
                   {t('delivery_mode')}
                 </label>
                 <select
@@ -220,10 +238,16 @@ export function FeedManagerModal({
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">
-                        <h4 className="text-sm font-bold text-tg-text truncate">
-                          {feed.title}
-                        </h4>
-                        <p className="text-[11px] text-tg-hint truncate font-mono">
+                        <div className="flex items-center gap-2">
+                          <h4 className="text-sm font-bold text-tg-text truncate">
+                            {feed.title}
+                          </h4>
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-tg-secondary text-tg-hint border border-tg-border">
+                            <Folder className="w-3 h-3" />
+                            {feed.category || 'General'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-tg-hint truncate font-mono mt-0.5">
                           {feed.feedUrl}
                         </p>
                       </div>
@@ -259,8 +283,8 @@ export function FeedManagerModal({
                       </div>
                     </div>
 
-                    {/* Mode and Pause toggles */}
-                    <div className="flex items-center justify-between text-xs pt-1 border-t border-tg-border/50">
+                    {/* Mode and Category and Pause toggles */}
+                    <div className="flex items-center justify-between text-xs pt-1 border-t border-tg-border/50 gap-2 flex-wrap">
                       <div className="flex items-center gap-2">
                         <span className="text-tg-hint text-[11px]">{t('delivery_mode')}:</span>
                         <select
@@ -277,30 +301,45 @@ export function FeedManagerModal({
                         </select>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          hapticFeedback('light');
-                          onUpdateFeed({ feedUrl: feed.feedUrl, paused: !feed.paused });
-                        }}
-                        className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-all ${
-                          feed.paused
-                            ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
-                            : 'bg-tg-bg text-tg-hint hover:text-tg-text border border-tg-border'
-                        }`}
-                      >
-                        {feed.paused ? (
-                          <>
-                            <Play className="w-3 h-3" />
-                            <span>{t('paused_badge')}</span>
-                          </>
-                        ) : (
-                          <>
-                            <Pause className="w-3 h-3" />
-                            <span>{t('pause')}</span>
-                          </>
-                        )}
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const newCat = window.prompt('Enter new category / folder name:', feed.category || 'General');
+                            if (newCat && newCat.trim() !== feed.category) {
+                              onUpdateFeed({ feedUrl: feed.feedUrl, category: newCat.trim() });
+                            }
+                          }}
+                          className="px-2 py-1 rounded-md bg-tg-bg text-tg-hint hover:text-tg-text text-[11px] border border-tg-border"
+                        >
+                          Move folder
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            hapticFeedback('light');
+                            onUpdateFeed({ feedUrl: feed.feedUrl, paused: !feed.paused });
+                          }}
+                          className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-all ${
+                            feed.paused
+                              ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
+                              : 'bg-tg-bg text-tg-hint hover:text-tg-text border border-tg-border'
+                          }`}
+                        >
+                          {feed.paused ? (
+                            <>
+                              <Play className="w-3 h-3" />
+                              <span>{t('paused_badge')}</span>
+                            </>
+                          ) : (
+                            <>
+                              <Pause className="w-3 h-3" />
+                              <span>{t('pause')}</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
                     </div>
 
                     {feed.lastError && (
@@ -318,4 +357,3 @@ export function FeedManagerModal({
     </div>
   );
 }
-

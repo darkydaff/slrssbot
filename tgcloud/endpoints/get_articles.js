@@ -12,6 +12,7 @@ export default async function (input, ctx) {
   const userId = user.id;
   const filter = input?.filter || 'unread'; // 'unread', 'all', 'starred'
   const targetFeedUrl = input?.feedUrl ? String(input.feedUrl).trim() : null;
+  const targetCategory = input?.category && input.category !== 'all' ? String(input.category).trim() : null;
   const search = input?.search ? String(input.search).trim() : null;
   const limit = Math.min(Math.max(parseInt(input?.limit, 10) || 25, 5), 60);
   const offset = Math.max(parseInt(input?.offset, 10) || 0, 0);
@@ -36,9 +37,14 @@ export default async function (input, ctx) {
   const subMap = new Map(userSubs.map((s) => [s.feedUrl, s]));
 
   // Build SQL dynamically for safety and performance
-  let whereClause = targetFeedUrl
-    ? sql`fe.feed_url = ${targetFeedUrl}`
-    : sql`fe.feed_url IN (SELECT feed_url FROM subscriptions WHERE chat_id = ${userId})`;
+  let whereClause;
+  if (targetFeedUrl) {
+    whereClause = sql`fe.feed_url = ${targetFeedUrl}`;
+  } else if (targetCategory) {
+    whereClause = sql`fe.feed_url IN (SELECT feed_url FROM subscriptions WHERE chat_id = ${userId} AND category = ${targetCategory})`;
+  } else {
+    whereClause = sql`fe.feed_url IN (SELECT feed_url FROM subscriptions WHERE chat_id = ${userId})`;
+  }
 
   if (filter === 'starred') {
     whereClause = sql`${whereClause} AND uas.is_starred = 1`;
@@ -111,6 +117,7 @@ export default async function (input, ctx) {
       id: r.id,
       feedUrl: r.feed_url,
       feedTitle,
+      category: sub?.category || 'General',
       title,
       link: r.link || '',
       author: decodeEntities(r.author || feedTitle),

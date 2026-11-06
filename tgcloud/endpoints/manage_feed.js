@@ -5,6 +5,7 @@ import { discoverAndParseFeed } from '../lib/feed_finder.js';
 import { pollSingleFeed } from '../lib/poller.js';
 import { extractCleanSummary } from '../lib/formatter.js';
 import { normalizeLanguageCode } from '../lib/i18n.js';
+import { parseOpml, generateOpml } from '../lib/opml.js';
 
 export default async function (input, ctx) {
   const user = ctx.initData?.user;
@@ -87,11 +88,13 @@ export default async function (input, ctx) {
       // Add subscription
       const customTitle = input?.customTitle ? String(input.customTitle).trim() : parsedFeed.title;
       const sendMode = input?.sendMode || 'default';
+      const category = input?.category ? String(input.category).trim() : 'General';
 
       await db.insert(subscriptions).values({
         chatId: userId,
         feedUrl,
         customTitle,
+        category,
         sendMode,
       }).run();
 
@@ -100,6 +103,7 @@ export default async function (input, ctx) {
         feed: {
           feedUrl,
           title: customTitle,
+          category,
           serverTitle: parsedFeed.title,
           description: parsedFeed.description || null,
           itemCount: items.length,
@@ -129,6 +133,7 @@ export default async function (input, ctx) {
 
     const updateFields = {};
     if (typeof input?.customTitle === 'string') updateFields.customTitle = input.customTitle.trim();
+    if (typeof input?.category === 'string') updateFields.category = input.category.trim() || 'General';
     if (typeof input?.sendMode === 'string') updateFields.sendMode = input.sendMode;
     if (typeof input?.paused === 'boolean') updateFields.paused = input.paused;
 
@@ -156,7 +161,7 @@ export default async function (input, ctx) {
     return { success: true };
   }
 
-  // 4. Refresh Single Feed
+  // 4. Refresh Single Feed or All Feeds
   if (action === 'refresh') {
     const feedUrl = String(input?.feedUrl || '').trim();
     if (feedUrl) {
@@ -197,6 +202,90 @@ export default async function (input, ctx) {
     }).run();
 
     return { success: true, lang: saveLang };
+  }
+
+  // 6. Generate or Get External Sync API Key
+  if (action === 'generate_api_key' || action === 'get_api_key') {
+    let setting = await db.select()
+      .from(chatSettings)
+      .where(eq(chatSettings.chatId, userId))
+      .get();
+
+    if (!setting?.apiKey || action === 'generate_api_key') {
+      const newKey = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+      await db.insert(chatSettings).values({
+        chatId: userId,
+        apiKey: newKey,
+      }).onConflictDoUpdate({
+        target: chatSettings.chatId,
+        set: { apiKey: newKey },
+      }).run();
+      return { success: true, apiKey: newKey };
+    }
+
+    return { success: true, apiKey: setting.apiKey };
+  }
+
+  // 7. Export OPML Document
+  if (action === 'export_opml') {
+    const userSubs = await db.select()
+      .from(subscriptions)
+      .where(eq(subscriptions.chatId, userId))
+      .all();
+
+    const allStates = await db.select().from(feedStates).all();
+    const stateMap = new Map(allStates.map((s) => [s.feedUrl, s]));
+
+    const feedList = (userSubs || []).map((sub) => {
+      const state = stateMap.get(sub.feedUrl);
+      return {
+        title: sub.customTitle || state?.title || sub.feedUrl,
+        feedUrl: sub.feedUrl,
+        siteUrl: state?.siteUrl || null,
+        category: sub.category || 'General',
+      };
+    });
+
+    const opmlXml = generateOpml(feedList, `RSS Subscriptions - User ${userId}`);
+    return { success: true, opmlXml, count: feedList.length };
+  }
+
+  // 8. Import OPML Document
+  if (action === 'import_opml') {
+    const xml = String(input?.opmlXml || '').trim();
+    if (!xml) {
+      throw new EndpointError('Missing opmlXml', { code: 'INVALID_INPUT' });
+    }
+
+    const feeds = parseOpml(xml);
+    if (feeds.length === 0) {
+      throw new EndpointError('No valid RSS feeds found in OPML', { code: 'EMPTY_OPML' });
+    }
+
+    let importedCount = 0;
+    for (const item of feeds) {
+      try {
+        const existing = await db.select()
+          .from(subscriptions)
+          .where(and(eq(subscriptions.chatId, userId), eq(subscriptions.feedUrl, item.xmlUrl)))
+          .get();
+
+        if (!existing) {
+          await db.insert(subscriptions).values({
+            chatId: userId,
+            feedUrl: item.xmlUrl,
+            customTitle: item.title || item.xmlUrl,
+            category: item.category || 'General',
+            sendMode: 'default',
+          }).run();
+          importedCount++;
+        }
+      } catch (err) {
+        console.warn(`[import_opml] Skipped ${item.xmlUrl}: ${err.message}`);
+      }
+    }
+
+    return { success: true, totalParsed: feeds.length, importedCount };
   }
 
   throw new EndpointError(`Unknown action: ${action}`, { code: 'UNKNOWN_ACTION' });
