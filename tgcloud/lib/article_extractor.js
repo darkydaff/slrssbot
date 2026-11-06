@@ -18,22 +18,36 @@ export function isTeaserContent(content) {
   if (!content) return true;
   const trimmed = content.trim();
 
-  // 1. If content is already long and substantive (>= 1500 chars), it is definitively a full article
-  if (trimmed.length >= 1500) {
+  // 1. If content is already long and substantive (>= 1800 chars), it is definitively a full article
+  if (trimmed.length >= 1800) {
     return false;
   }
 
-  // 2. Under 500 characters is almost always an excerpt/summary
-  if (trimmed.length < 500) {
+  // 2. Strip HTML tags to evaluate true text body length
+  const textOnly = trimmed
+    .replace(/<[^>]+>/g, '')
+    .replace(/&[a-z0-9#]+;/gi, ' ')
+    .trim();
+
+  // 3. If plain text length is under 600 characters, it is almost certainly a summary/excerpt
+  if (textOnly.length < 600) {
     return true;
   }
 
-  // 3. For snippets between 500 and 1500 characters, check if it terminates with teaser patterns
+  // 4. If raw HTML length is under 800 characters, it is also a snippet
+  if (trimmed.length < 800) {
+    return true;
+  }
+
+  // 5. For snippets between 800 and 1800 characters, check if it terminates with teaser patterns
   const teaserPatterns = [
     /class=["'][^"']*(?:more-link|read-more|post-more|link-more|continue-reading|post-excerpt)[^"']*["']/i,
     /id=["']more-\d+["']/i,
     /<a\b[^>]*>[\s\S]*?(?:more…|more\.\.\.|read more|continue reading|view post|read the full post|читати далі|читать далее|подробнее|далі|weiterlesen|lire la suite|leer más)[\s\S]*?<\/a>/i,
     /(?:читати далі|читать далее|подробнее|read more|continue reading)[\s\S]*?(?:<\/a>|<\/p>|$)/i,
+    /(?:The post\b[\s\S]*?\bfirst appeared on)/i,
+    /(?:first appeared on|впервые появилось на|вперше з'явилося на)/i,
+    /(?:read the full article|read full story|full article at|continue reading at)/i,
     /(?:\[&#8230;\]|\[\.\.\.\]|…|&hellip;)\s*(?:<\/p>)?\s*$/i,
     /…\s*$/i,
   ];
@@ -266,8 +280,124 @@ export function extractArticleFromHtml(html, pageUrl) {
 }
 
 /**
+ * Attempt to fetch full article via WordPress REST API.
+ * Millions of WordPress sites have bot-gated frontend HTML, but open WP REST APIs.
+ * @param {string} pageUrl
+ * @param {object} [opts]
+ * @returns {Promise<{title: string, author: string, leadImage: string|null, contentHtml: string}|null>}
+ */
+export async function fetchFromWordPressApi(pageUrl, opts = {}) {
+  try {
+    const u = new URL(pageUrl);
+    const segments = u.pathname.split('/').filter(Boolean);
+    if (!segments.length) return null;
+
+    // The slug is typically the last path segment (e.g. /anime-jellyfish-characters/)
+    const rawSlug = segments[segments.length - 1].replace(/\.(html?|php)$/i, '');
+    if (!rawSlug || /^\d+$/.test(rawSlug)) return null;
+
+    const headers = {
+      'User-Agent': USER_AGENT,
+      'Accept': 'application/json, text/plain, */*',
+    };
+
+    const fetchOptions = { headers };
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+      try {
+        fetchOptions.signal = AbortSignal.timeout(opts.timeoutMs || 8000);
+      } catch {}
+    }
+
+    // 1. Query /wp-json/wp/v2/posts?slug=<slug>&_embed=1
+    const wpPostsUrl = `${u.origin}/wp-json/wp/v2/posts?slug=${encodeURIComponent(rawSlug)}&_embed=1`;
+    let res = await fetch(wpPostsUrl, fetchOptions);
+
+    let posts = null;
+    if (res && res.ok) {
+      posts = await res.json();
+    }
+
+    // 2. Fallback to /wp-json/wp/v2/pages?slug=<slug>&_embed=1 if posts was empty
+    if (!Array.isArray(posts) || posts.length === 0) {
+      const wpPagesUrl = `${u.origin}/wp-json/wp/v2/pages?slug=${encodeURIComponent(rawSlug)}&_embed=1`;
+      const pageRes = await fetch(wpPagesUrl, fetchOptions);
+      if (pageRes && pageRes.ok) {
+        posts = await pageRes.json();
+      }
+    }
+
+    if (!Array.isArray(posts) || posts.length === 0) return null;
+
+    const post = posts[0];
+    if (!post || !post.content?.rendered) return null;
+
+    const rawHtml = post.content.rendered;
+    const contentHtml = normalizeImagesAndLinks(rawHtml, pageUrl);
+    const title = post.title?.rendered ? decodeEntities(post.title.rendered.replace(/<[^>]+>/g, '').trim()) : '';
+    const author = post._embedded?.author?.[0]?.name ? decodeEntities(post._embedded.author[0].name.trim()) : '';
+    const leadImage =
+      post._embedded?.['wp:featuredmedia']?.[0]?.source_url ||
+      post.jetpack_featured_media_url ||
+      null;
+
+    return {
+      title,
+      author,
+      leadImage,
+      contentHtml,
+    };
+  } catch (err) {
+    console.warn('[fetchFromWordPressApi] error for', pageUrl, err?.message);
+    return null;
+  }
+}
+
+/**
+ * Attempt to fetch full post via Substack REST API.
+ * @param {string} pageUrl
+ * @param {object} [opts]
+ * @returns {Promise<{title: string, author: string, leadImage: string|null, contentHtml: string}|null>}
+ */
+export async function fetchFromSubstackApi(pageUrl, opts = {}) {
+  try {
+    if (!pageUrl.includes('/p/')) return null;
+    const u = new URL(pageUrl);
+    const match = u.pathname.match(/\/p\/([^/]+)/);
+    if (!match) return null;
+    const slug = match[1];
+
+    const headers = {
+      'User-Agent': USER_AGENT,
+      'Accept': 'application/json, text/plain, */*',
+    };
+    const fetchOptions = { headers };
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+      try {
+        fetchOptions.signal = AbortSignal.timeout(opts.timeoutMs || 8000);
+      } catch {}
+    }
+
+    const apiUrl = `${u.origin}/api/v1/posts/${encodeURIComponent(slug)}`;
+    const res = await fetch(apiUrl, fetchOptions);
+    if (!res || !res.ok) return null;
+
+    const data = await res.json();
+    if (!data || !data.body_html) return null;
+
+    return {
+      title: data.title ? decodeEntities(data.title) : '',
+      author: data.bylines?.[0]?.name || '',
+      leadImage: data.cover_image || null,
+      contentHtml: normalizeImagesAndLinks(data.body_html, pageUrl),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetch a webpage directly and extract its article content.
- * Gracefully handles timeouts or 403 blocks.
+ * Gracefully handles timeouts, bot challenges, and 403 blocks with multi-source fallback.
  * @param {string} url
  * @param {object} [opts]
  * @returns {Promise<{title: string, author: string, leadImage: string|null, contentHtml: string}|null>}
@@ -286,7 +416,7 @@ export async function fetchAndExtractArticle(url, opts = {}) {
     const fetchOptions = { headers };
     if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
       try {
-        fetchOptions.signal = AbortSignal.timeout(8000);
+        fetchOptions.signal = AbortSignal.timeout(opts.timeoutMs || 8000);
       } catch {}
     }
 
@@ -303,32 +433,60 @@ export async function fetchAndExtractArticle(url, opts = {}) {
       }
       if (!res) {
         console.warn('[fetchAndExtractArticle] fetch error:', url, fetchErr?.message);
-        return null;
       }
     }
 
-    if (!res.ok) {
-      if (!url.includes('://www.')) {
-        try {
-          const u = new URL(url);
-          u.hostname = `www.${u.hostname}`;
-          const wwwRes = await fetch(u.toString(), fetchOptions);
-          if (wwwRes.ok) {
-            res = wwwRes;
-          }
-        } catch {}
-      }
-      if (!res.ok) {
-        console.warn('[fetchAndExtractArticle] fetch failed:', url, res.status, res.statusText);
-        return null;
+    if (res && !res.ok && !url.includes('://www.')) {
+      try {
+        const u = new URL(url);
+        u.hostname = `www.${u.hostname}`;
+        const wwwRes = await fetch(u.toString(), fetchOptions);
+        if (wwwRes && wwwRes.ok) {
+          res = wwwRes;
+        }
+      } catch {}
+    }
+
+    let extracted = null;
+    if (res && res.ok) {
+      const htmlText = await res.text();
+      const isChallenge =
+        /<title\b[^>]*>(?:Checking your browser|Just a moment|Attention Required|Security Check|Bot Verification)<\/title>/i.test(htmlText) ||
+        htmlText.includes('__challenge/challenge.js') ||
+        htmlText.includes('window.HASHCASH_CONFIG');
+
+      if (!isChallenge) {
+        extracted = extractArticleFromHtml(htmlText, url);
       }
     }
 
-    const htmlText = await res.text();
-    return extractArticleFromHtml(htmlText, url);
+    // If HTML extraction succeeded and produced substantive content, return it
+    if (extracted && extracted.contentHtml && extracted.contentHtml.length >= 500) {
+      return extracted;
+    }
+
+    // Fallback 1: WordPress REST API (handles 403s, bot challenges on WordPress blogs)
+    const wpExtracted = await fetchFromWordPressApi(url, opts);
+    if (wpExtracted && wpExtracted.contentHtml && wpExtracted.contentHtml.length >= 500) {
+      return wpExtracted;
+    }
+
+    // Fallback 2: Substack API (handles Substack paywalls and bot challenges)
+    const substackExtracted = await fetchFromSubstackApi(url, opts);
+    if (substackExtracted && substackExtracted.contentHtml && substackExtracted.contentHtml.length >= 500) {
+      return substackExtracted;
+    }
+
+    // If initial extracted had some content, return it as last resort
+    if (extracted && extracted.contentHtml) {
+      return extracted;
+    }
+
+    return null;
   } catch (err) {
     console.warn('[fetchAndExtractArticle] error:', err?.message || err);
     return null;
   }
 }
+
 

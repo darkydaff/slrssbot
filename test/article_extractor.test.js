@@ -105,13 +105,21 @@ test('extractArticleFromHtml extracts full article with nested divs in entry con
 });
 
 test('isTeaserContent does not treat long substantive articles as teasers', () => {
-  // Even if a 40KB article has an internal link with "read more" or "more-123", it's > 1500 chars so it's not a teaser
+  // Even if a 40KB article has an internal link with "read more" or "more-123", it's > 1800 chars so it's not a teaser
   const longArticle = '<p>' + 'In 1957, Beverly Garland starred in Decoy. '.repeat(100) + '</p>' +
     '<a href="#more-123">more…</a>' +
     '<p>' + 'She continued to star in multiple television series. '.repeat(50) + '</p>';
   
-  assert.equal(longArticle.length > 1500, true);
+  assert.equal(longArticle.length > 1800, true);
   assert.equal(isTeaserContent(longArticle), false);
 });
+
+test('isTeaserContent detects WordPress feed excerpts with first appeared on as teasers', () => {
+  const wpFeedSnippet = '<p>For World Jellyfish Day, I am combining my love of marine life with my otaku side! From Tentacool and Clara to Jellymon and JELEE-chan, here are five jellyfish-inspired anime picks, two Western animation favourites and some fascinating jellyfish facts. I have even included a few of my own aquarium recordings!</p>\n' +
+    '<p><p>The post <a rel="nofollow" href="https://allanimemags.com/anime-jellyfish-characters/">5 Anime Jellyfish Characters to Celebrate World Jellyfish Day</a> first appeared on <a rel="nofollow" href="https://allanimemags.com">All About Anime and Manga</a>.</p></p>';
+
+  assert.equal(isTeaserContent(wpFeedSnippet), true);
+});
+
 
 

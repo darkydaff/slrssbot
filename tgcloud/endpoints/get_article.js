@@ -3,7 +3,7 @@ import { eq, and, sql } from 'sdk/db';
 import { feedEntries, userArticleStates, subscriptions, feedStates } from '../schema.js';
 import { decodeEntities, cleanArticleContent } from '../lib/formatter.js';
 import { isTeaserContent, fetchAndExtractArticle } from '../lib/article_extractor.js';
-import { editTelegraphPage } from '../lib/telegraph.js';
+import { createTelegraphPage, editTelegraphPage } from '../lib/telegraph.js';
 
 export default async function (input, ctx) {
   const user = ctx.initData?.user;
@@ -68,10 +68,18 @@ export default async function (input, ctx) {
   let rawLeadImg = article.leadImageUrl || null;
 
   // On-demand full article extraction from original link if missing or a teaser snippet
-  const isTeaser = !rawContent || rawContent.length < 500 || isTeaserContent(rawContent);
-  if (isTeaser && article.link) {
+  const isTeaser = !rawContent || rawContent.length < 800 || isTeaserContent(rawContent);
+  if (isTeaser && (article.link || article.telegraphUrl)) {
     try {
-      const extracted = await fetchAndExtractArticle(article.link);
+      let extracted = null;
+      if (article.link) {
+        extracted = await fetchAndExtractArticle(article.link);
+      }
+      // If primary link extraction failed or was short, fall back to existing Telegraph page if present
+      if ((!extracted?.contentHtml || extracted.contentHtml.length < 500) && article.telegraphUrl) {
+        extracted = await fetchAndExtractArticle(article.telegraphUrl);
+      }
+
       if (extracted?.contentHtml && extracted.contentHtml.length > rawContent.length) {
         rawContent = extracted.contentHtml;
         if (extracted.title && (rawTitle === 'Untitled' || !rawTitle)) {
@@ -99,6 +107,19 @@ export default async function (input, ctx) {
             if (newUrl) updatedTelegraphUrl = newUrl;
           } catch (tErr) {
             console.warn('[get_article] editTelegraphPage failed:', tErr?.message);
+          }
+        } else if (rawContent && rawContent.length > 800) {
+          try {
+            updatedTelegraphUrl = await createTelegraphPage({
+              title: rawTitle,
+              contentHtml: rawContent,
+              authorName: rawAuthor,
+              authorUrl: article.link,
+              leadImageUrl: rawLeadImg,
+              dbInstance: db,
+            });
+          } catch (tErr) {
+            console.warn('[get_article] createTelegraphPage failed:', tErr?.message);
           }
         }
 

@@ -89,3 +89,4 @@ export const THEME_OPTIONS = [
   { key: 'dark', label: 'Dark', icon: '🌙', bg: '#18181b', fg: '#e4e4e7', border: '#3f3f46' },
   { key: 'oled', label: 'OLED', icon: '🖤', bg: '#000000', fg: '#ffffff', border: '#262626' },
 ];
+

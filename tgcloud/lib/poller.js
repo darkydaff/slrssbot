@@ -372,7 +372,7 @@ export async function pollSingleFeed(feedUrl) {
 
     // Check if any existing entries for this feed need backfilling (e.g. missing title/content/link or short teaser)
     const incomplete = await db.get(
-      sql`SELECT count(*) AS c FROM feed_entries WHERE feed_url = ${feedUrl} AND (title IS NULL OR content IS NULL OR title = 'Untitled' OR link = '' OR length(content) < 500)`
+      sql`SELECT count(*) AS c FROM feed_entries WHERE feed_url = ${feedUrl} AND (title IS NULL OR content IS NULL OR title = 'Untitled' OR link = '' OR length(content) < 800)`
     );
     const needsBackfill = incomplete && incomplete.c > 0;
 
@@ -486,7 +486,7 @@ export async function pollSingleFeed(feedUrl) {
         !existing.content ||
         existing.title === 'Untitled' ||
         !existing.link ||
-        existing.content.length < 500 ||
+        existing.content.length < 800 ||
         isTeaserContent(existing.content)
       );
 
