@@ -15,19 +15,33 @@ export default async function (input, ctx) {
     .where(eq(subscriptions.chatId, userId))
     .all();
 
-  if (!userSubs || userSubs.length === 0) {
-    const userSetting = await db.select()
-      .from(chatSettings)
-      .where(eq(chatSettings.chatId, userId))
-      .get();
+  const userSetting = await db.select()
+    .from(chatSettings)
+    .where(eq(chatSettings.chatId, userId))
+    .get();
 
+  let definedFolders = [];
+  try {
+    if (Array.isArray(userSetting?.folders)) {
+      definedFolders = userSetting.folders;
+    } else if (typeof userSetting?.folders === 'string') {
+      definedFolders = JSON.parse(userSetting.folders);
+    }
+  } catch {}
+  if (!definedFolders.includes('General')) {
+    definedFolders.unshift('General');
+  }
+
+  if (!userSubs || userSubs.length === 0) {
     return {
       feeds: [],
+      categories: definedFolders.map((name) => ({ name, feedCount: 0, unreadCount: 0 })),
       stats: {
         totalFeeds: 0,
         totalUnread: 0,
         totalStarred: 0,
       },
+      apiKey: userSetting?.apiKey || null,
       lang: userSetting?.lang || 'auto',
     };
   }
@@ -77,8 +91,15 @@ export default async function (input, ctx) {
     });
   }
 
-  // Calculate category groups and summary counts
+  // Calculate category groups and summary counts (merging defined folders)
   const categoryMap = new Map();
+  for (const folderName of definedFolders) {
+    const clean = String(folderName || '').trim();
+    if (clean && !categoryMap.has(clean)) {
+      categoryMap.set(clean, { name: clean, feedCount: 0, unreadCount: 0 });
+    }
+  }
+
   for (const f of feedResults) {
     const catName = f.category || 'General';
     if (!categoryMap.has(catName)) {
@@ -88,19 +109,18 @@ export default async function (input, ctx) {
     cat.feedCount++;
     cat.unreadCount += f.unreadCount;
   }
-  const categories = Array.from(categoryMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+
+  const categories = Array.from(categoryMap.values()).sort((a, b) => {
+    if (a.name === 'General') return -1;
+    if (b.name === 'General') return 1;
+    return a.name.localeCompare(b.name);
+  });
 
   // Count starred articles for this user
   const starredRow = await db.get(
     sql`SELECT count(*) as count FROM user_article_states WHERE user_id = ${userId} AND is_starred = 1`
   );
   const totalStarred = starredRow?.count || 0;
-
-  // Get user's saved language preference if any
-  const userSetting = await db.select()
-    .from(chatSettings)
-    .where(eq(chatSettings.chatId, userId))
-    .get();
 
   return {
     feeds: feedResults,

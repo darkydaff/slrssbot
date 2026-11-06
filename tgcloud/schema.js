@@ -76,6 +76,7 @@ export const chatSettings = table('chat_settings', {
   enablePreview: boolean('enable_preview').default(true),
   displayTemplate: text('display_template'),
   apiKey: text('api_key'),
+  folders: json('folders'),
 });
 
 // 6. Global Bot Config (e.g. Telegraph account token)

@@ -4,6 +4,8 @@ import { parseOpml, generateOpml } from '../tgcloud/lib/opml.js';
 import feverEndpoint from '../tgcloud/endpoints/fever.js';
 import greaderEndpoint from '../tgcloud/endpoints/greader.js';
 import backupEndpoint from '../tgcloud/endpoints/backup.js';
+import manageFeed from '../tgcloud/endpoints/manage_feed.js';
+import getFeeds from '../tgcloud/endpoints/get_feeds.js';
 
 test('OPML parser extracts nested folder categories', () => {
   const opmlWithCategories = `<?xml version="1.0" encoding="UTF-8"?>
@@ -84,5 +86,38 @@ test('Backup endpoint exports structured JSON and validates format on import', a
     async () => backupEndpoint({ action: 'import', backupData: {} }, authCtx),
     (err) => err.parameters?.code === 'INVALID_FORMAT'
   );
+});
+
+test('Folder management actions create, rename, and delete custom folders', async () => {
+  const authCtx = { initData: { user: { id: 1111 } } };
+
+  // Create folder
+  const createRes = await manageFeed({ action: 'create_folder', name: 'Science & Tech' }, authCtx);
+  assert.equal(createRes.success, true);
+  assert.equal(createRes.folder, 'Science & Tech');
+  assert.ok(createRes.folders.includes('Science & Tech'));
+
+  // Reject renaming or deleting default General folder
+  await assert.rejects(
+    async () => manageFeed({ action: 'rename_folder', oldName: 'General', newName: 'Base' }, authCtx),
+    (err) => err.parameters?.code === 'CANNOT_RENAME_DEFAULT'
+  );
+
+  await assert.rejects(
+    async () => manageFeed({ action: 'delete_folder', name: 'General' }, authCtx),
+    (err) => err.parameters?.code === 'CANNOT_DELETE_DEFAULT'
+  );
+
+  // Rename folder
+  const renameRes = await manageFeed({ action: 'rename_folder', oldName: 'Science & Tech', newName: 'Deep Tech' }, authCtx);
+  assert.equal(renameRes.success, true);
+  assert.equal(renameRes.newName, 'Deep Tech');
+  assert.ok(renameRes.folders.includes('Deep Tech'));
+
+  // Delete folder
+  const deleteRes = await manageFeed({ action: 'delete_folder', name: 'Deep Tech' }, authCtx);
+  assert.equal(deleteRes.success, true);
+  assert.equal(deleteRes.deleted, 'Deep Tech');
+  assert.ok(!deleteRes.folders.includes('Deep Tech'));
 });
 

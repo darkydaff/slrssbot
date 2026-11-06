@@ -374,6 +374,29 @@ export function App() {
     await fetchArticles({ newOffset: 0, append: false });
   };
 
+  // Create Folder
+  const handleCreateFolder = async (name) => {
+    await callApi('manage_feed', { action: 'create_folder', name });
+    await fetchFeeds();
+  };
+
+  // Rename Folder
+  const handleRenameFolder = async (oldName, newName) => {
+    await callApi('manage_feed', { action: 'rename_folder', oldName, newName });
+    await fetchFeeds();
+    await fetchArticles({ newOffset: 0, append: false });
+  };
+
+  // Delete Folder
+  const handleDeleteFolder = async (name) => {
+    await callApi('manage_feed', { action: 'delete_folder', name });
+    if (activeCategory === name) {
+      setActiveCategory(null);
+    }
+    await fetchFeeds();
+    await fetchArticles({ newOffset: 0, append: false });
+  };
+
   const activeFeedObj = feeds.find((f) => f.feedUrl === activeFeedUrl);
 
   return (
@@ -450,11 +473,15 @@ export function App() {
           setIsManageModalOpen(false);
         }}
         feeds={feeds}
+        categories={categories}
         onSubscribeFeed={handleSubscribeFeed}
         onUpdateFeed={handleUpdateFeed}
         onUnsubscribeFeed={handleUnsubscribeFeed}
         onRefreshFeed={handleRefreshFeed}
-        initialTab={isAddModalOpen ? 'add' : 'list'}
+        onCreateFolder={handleCreateFolder}
+        onRenameFolder={handleRenameFolder}
+        onDeleteFolder={handleDeleteFolder}
+        initialTab={isAddModalOpen ? 'add' : 'feeds'}
       />
 
       {/* 4. Settings & Stats Modal */}

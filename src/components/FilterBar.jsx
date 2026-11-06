@@ -27,6 +27,11 @@ export function FilterBar({
     ? feeds.filter((f) => (f.category || 'General') === activeCategory)
     : feeds;
 
+  // Only display category row if user actually has multiple folders (avoids redundant "General" pill when there are no other folders)
+  const hasMultipleFolders = Boolean(
+    categories && (categories.length > 1 || (categories.length === 1 && categories[0].name !== 'General'))
+  );
+
   return (
     <div className="bg-tg-bg border-b border-tg-border px-4 py-2 space-y-2.5">
       {/* 1. Main Navigation Tabs & View Mode & Search */}
@@ -154,8 +159,8 @@ export function FilterBar({
         </div>
       )}
 
-      {/* 3. Categories / Folders Row */}
-      {categories && categories.length > 0 && (
+      {/* 3. Categories / Folders Row (Only shown when multiple folders exist) */}
+      {hasMultipleFolders && (
         <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 text-xs">
           <button
             type="button"

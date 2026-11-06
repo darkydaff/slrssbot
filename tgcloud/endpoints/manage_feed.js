@@ -288,6 +288,110 @@ export default async function (input, ctx) {
     return { success: true, totalParsed: feeds.length, importedCount };
   }
 
+  // 9. Create New Folder
+  if (action === 'create_folder') {
+    const folderName = String(input?.name || '').trim();
+    if (!folderName) {
+      throw new EndpointError('Folder name is required', { code: 'INVALID_INPUT' });
+    }
+    if (folderName.length > 50) {
+      throw new EndpointError('Folder name is too long (max 50 chars)', { code: 'INVALID_INPUT' });
+    }
+
+    const setting = await db.select().from(chatSettings).where(eq(chatSettings.chatId, userId)).get();
+    let folders = [];
+    try {
+      if (Array.isArray(setting?.folders)) folders = setting.folders;
+      else if (typeof setting?.folders === 'string') folders = JSON.parse(setting.folders);
+    } catch {}
+    if (!folders.includes('General')) folders.unshift('General');
+    if (!folders.includes(folderName)) {
+      folders.push(folderName);
+    }
+
+    await db.insert(chatSettings).values({
+      chatId: userId,
+      folders,
+    }).onConflictDoUpdate({
+      target: chatSettings.chatId,
+      set: { folders },
+    }).run();
+
+    return { success: true, folder: folderName, folders };
+  }
+
+  // 10. Rename Folder
+  if (action === 'rename_folder') {
+    const oldName = String(input?.oldName || '').trim();
+    const newName = String(input?.newName || '').trim();
+    if (!oldName || !newName) {
+      throw new EndpointError('Both oldName and newName are required', { code: 'INVALID_INPUT' });
+    }
+    if (oldName === 'General') {
+      throw new EndpointError('Cannot rename General folder', { code: 'CANNOT_RENAME_DEFAULT' });
+    }
+
+    await db.update(subscriptions)
+      .set({ category: newName })
+      .where(and(eq(subscriptions.chatId, userId), eq(subscriptions.category, oldName)))
+      .run();
+
+    const setting = await db.select().from(chatSettings).where(eq(chatSettings.chatId, userId)).get();
+    let folders = [];
+    try {
+      if (Array.isArray(setting?.folders)) folders = setting.folders;
+      else if (typeof setting?.folders === 'string') folders = JSON.parse(setting.folders);
+    } catch {}
+    folders = folders.map((f) => (f === oldName ? newName : f));
+    if (!folders.includes(newName)) folders.push(newName);
+
+    await db.insert(chatSettings).values({
+      chatId: userId,
+      folders,
+    }).onConflictDoUpdate({
+      target: chatSettings.chatId,
+      set: { folders },
+    }).run();
+
+    return { success: true, oldName, newName, folders };
+  }
+
+  // 11. Delete Folder
+  if (action === 'delete_folder') {
+    const folderName = String(input?.name || '').trim();
+    if (!folderName) {
+      throw new EndpointError('Folder name is required', { code: 'INVALID_INPUT' });
+    }
+    if (folderName === 'General') {
+      throw new EndpointError('Cannot delete General folder', { code: 'CANNOT_DELETE_DEFAULT' });
+    }
+
+    // Safely reassign any feeds in this folder to General
+    await db.update(subscriptions)
+      .set({ category: 'General' })
+      .where(and(eq(subscriptions.chatId, userId), eq(subscriptions.category, folderName)))
+      .run();
+
+    const setting = await db.select().from(chatSettings).where(eq(chatSettings.chatId, userId)).get();
+    let folders = [];
+    try {
+      if (Array.isArray(setting?.folders)) folders = setting.folders;
+      else if (typeof setting?.folders === 'string') folders = JSON.parse(setting.folders);
+    } catch {}
+    folders = folders.filter((f) => f !== folderName);
+    if (!folders.includes('General')) folders.unshift('General');
+
+    await db.insert(chatSettings).values({
+      chatId: userId,
+      folders,
+    }).onConflictDoUpdate({
+      target: chatSettings.chatId,
+      set: { folders },
+    }).run();
+
+    return { success: true, deleted: folderName, folders };
+  }
+
   throw new EndpointError(`Unknown action: ${action}`, { code: 'UNKNOWN_ACTION' });
 }
 
