@@ -41,7 +41,11 @@ export function cleanArticleContent(html) {
     })
     // Replace legacy font tags: <font color="..." size="..." face="..."> with neutral <span>
     .replace(/<font\b[^>]*>/gi, '<span>')
-    .replace(/<\/font>/gi, '</span>');
+    .replace(/<\/font>/gi, '</span>')
+    // Remove RSS syndication boilerplate notices (e.g. "The post ... first appeared on ...")
+    .replace(/<p\b[^>]*>(?:The post\b|Цей пост\b|Пост\b|Стаття\b)[\s\S]*?(?:first appeared on|вперше з'явилося на|вперше опубліковано на)[\s\S]*?<\/p>/gi, '')
+    // Remove promotional footers & widgets
+    .replace(/<div\b[^>]*class=["'][^"']*(?:visitor-promo|ad-disclaimer-container|google-preferred-source-badge|outpost-pub-container|sharedaddy|jp-relatedposts|likes-widget-placeholder|jetpack-likes-widget-wrapper)[^"']*["'][^>]*>[\s\S]*?<\/div>/gi, '');
 }
 
 export const FONT_SIZE_MAP = {

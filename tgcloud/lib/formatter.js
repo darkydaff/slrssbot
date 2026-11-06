@@ -64,6 +64,9 @@ export function cleanArticleContent(html) {
   res = res.replace(/<div\b[^>]*class=["'][^"']*(?:visitor-promo|ad-disclaimer-container|google-preferred-source-badge|outpost-pub-container|sharedaddy|jp-relatedposts|likes-widget-placeholder|jetpack-likes-widget-wrapper)[^"']*["'][^>]*>[\s\S]*?<\/div>/gi, '');
   res = res.replace(/<div\b[^>]*id=["'](?:after_disclaimer_placement|atatags-[^\"']*)[\"'][^>]*>[\s\S]*?<\/div>/gi, '');
 
+  // 4. Remove RSS syndication boilerplate notices (e.g. "The post ... first appeared on ...")
+  res = res.replace(/<p\b[^>]*>(?:The post\b|Цей пост\b|Пост\b|Стаття\b)[\s\S]*?(?:first appeared on|вперше з'явилося на|вперше опубліковано на)[\s\S]*?<\/p>/gi, '');
+
   return res.trim();
 }
 
