@@ -42,7 +42,13 @@ export function App() {
   // Modals state
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isManageModalOpen, setIsManageModalOpen] = useState(false);
+  const [manageModalTab, setManageModalTab] = useState('feeds');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  const handleOpenManageModal = (tab = 'feeds') => {
+    setManageModalTab(tab);
+    setIsManageModalOpen(true);
+  };
 
   // Debounced search timer
   const searchTimeoutRef = useRef(null);
@@ -421,7 +427,7 @@ export function App() {
             isRefreshing={isRefreshing}
             onRefresh={handleRefresh}
             onOpenAddModal={() => setIsAddModalOpen(true)}
-            onOpenManageModal={() => setIsManageModalOpen(true)}
+            onOpenManageModal={() => handleOpenManageModal('feeds')}
             onOpenSettings={() => setIsSettingsOpen(true)}
           />
 
@@ -440,6 +446,8 @@ export function App() {
             starredTotal={stats.totalStarred}
             viewMode={viewMode}
             onToggleViewMode={handleToggleViewMode}
+            onCreateFolder={handleCreateFolder}
+            onOpenManageModal={handleOpenManageModal}
           />
 
           <main>
@@ -481,7 +489,7 @@ export function App() {
         onCreateFolder={handleCreateFolder}
         onRenameFolder={handleRenameFolder}
         onDeleteFolder={handleDeleteFolder}
-        initialTab={isAddModalOpen ? 'add' : 'feeds'}
+        initialTab={isAddModalOpen ? 'add' : manageModalTab}
       />
 
       {/* 4. Settings & Stats Modal */}

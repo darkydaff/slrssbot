@@ -34,6 +34,13 @@ export function FeedManagerModal({
   const { t } = useI18n();
   const [activeTab, setActiveTab] = useState(initialTab); // 'feeds' | 'folders' | 'add'
 
+  // Sync activeTab when initialTab or isOpen changes
+  React.useEffect(() => {
+    if (isOpen) {
+      setActiveTab(initialTab || 'feeds');
+    }
+  }, [isOpen, initialTab]);
+
   // Add Feed form state
   const [urlInput, setUrlInput] = useState('');
   const [customTitleInput, setCustomTitleInput] = useState('');
