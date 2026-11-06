@@ -6,12 +6,27 @@ compatibility_date = "2025-01-01"
 [triggers]
 crons = ["*/5 * * * *"]
 
-# Enable Cloudflare Workers Logs / Observability in the dashboard
+# Cloudflare Workers Observability (Logs & Tracing)
 [observability]
 enabled = true
+head_sampling_rate = 1
+redact_query_string = false
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
+persist = true
+
+[observability.issue_detection]
+enabled = false
 
 # Secrets (set via CLI, never commit raw tokens):
 #   npx wrangler secret put TGCLOUD_TOKEN
 # Optional secret for manual HTTP POST /poll trigger:
 #   npx wrangler secret put POLL_SECRET
-
