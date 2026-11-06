@@ -3,6 +3,7 @@ import { eq, and, sql } from 'sdk/db';
 import { feedEntries, userArticleStates, subscriptions, feedStates } from '../schema.js';
 import { decodeEntities, cleanArticleContent } from '../lib/formatter.js';
 import { isTeaserContent, fetchAndExtractArticle } from '../lib/article_extractor.js';
+import { editTelegraphPage } from '../lib/telegraph.js';
 
 export default async function (input, ctx) {
   const user = ctx.initData?.user;
@@ -83,6 +84,24 @@ export default async function (input, ctx) {
           rawLeadImg = extracted.leadImage;
         }
 
+        let updatedTelegraphUrl = article.telegraphUrl;
+        if (article.telegraphUrl) {
+          try {
+            const newUrl = await editTelegraphPage({
+              pagePathOrUrl: article.telegraphUrl,
+              title: rawTitle,
+              contentHtml: rawContent,
+              authorName: rawAuthor,
+              authorUrl: article.link,
+              leadImageUrl: rawLeadImg,
+              dbInstance: db,
+            });
+            if (newUrl) updatedTelegraphUrl = newUrl;
+          } catch (tErr) {
+            console.warn('[get_article] editTelegraphPage failed:', tErr?.message);
+          }
+        }
+
         // Persist full article into SQLite for instant subsequent views
         await db.update(feedEntries)
           .set({
@@ -90,9 +109,12 @@ export default async function (input, ctx) {
             title: rawTitle,
             author: rawAuthor,
             leadImageUrl: rawLeadImg,
+            telegraphUrl: updatedTelegraphUrl,
           })
           .where(eq(feedEntries.id, article.id))
           .run();
+
+        article.telegraphUrl = updatedTelegraphUrl;
       }
     } catch (err) {
       console.warn('[get_article] on-demand extraction failed:', err?.message);

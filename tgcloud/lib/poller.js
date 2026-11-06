@@ -8,7 +8,7 @@ import { subscriptions, feedStates, feedEntries } from '../schema.js';
 import { parseFeed } from './rss.js';
 import { formatPost, formatChannelPost, matchesFilter, truncate, extractCleanSummary, decodeEntities, cleanArticleContent } from './formatter.js';
 import { getChatLanguage } from './i18n.js';
-import { createTelegraphPage } from './telegraph.js';
+import { createTelegraphPage, editTelegraphPage } from './telegraph.js';
 import { isTeaserContent, fetchAndExtractArticle } from './article_extractor.js';
 import { parseUrl } from './feed_finder.js';
 import {
@@ -529,6 +529,24 @@ export async function pollSingleFeed(feedUrl) {
       const itemMedia = item.media || [];
 
       if (existing) {
+        let updatedTelegraphUrl = existing.telegraphUrl;
+        if (existing.telegraphUrl && articleBody && articleBody.length > 500) {
+          try {
+            const newUrl = await editTelegraphPage({
+              pagePathOrUrl: existing.telegraphUrl,
+              title: articleTitle || item.title || existing.title,
+              contentHtml: articleBody,
+              authorName: articleAuthor || existing.author,
+              authorUrl: item.link,
+              leadImageUrl: itemLeadImg,
+              dbInstance: db,
+            });
+            if (newUrl) updatedTelegraphUrl = newUrl;
+          } catch (tErr) {
+            console.warn('[pollSingleFeed] backfill editTelegraphPage failed:', tErr?.message);
+          }
+        }
+
         // Backfill existing entry in DB so the Mini App displays full title, links, and text
         await db.update(feedEntries)
           .set({
@@ -538,6 +556,7 @@ export async function pollSingleFeed(feedUrl) {
             summary: itemSummary || existing.summary || '',
             content: itemContent || existing.content || '',
             leadImageUrl: itemLeadImg || existing.leadImageUrl || null,
+            telegraphUrl: updatedTelegraphUrl,
             media: (itemMedia && itemMedia.length > 0) ? itemMedia : existing.media,
           })
           .where(eq(feedEntries.id, existing.id))

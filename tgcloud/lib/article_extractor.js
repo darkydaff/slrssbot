@@ -283,15 +283,22 @@ export async function fetchAndExtractArticle(url, opts = {}) {
     };
 
     let res = null;
+    const fetchOptions = { headers };
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+      try {
+        fetchOptions.signal = AbortSignal.timeout(8000);
+      } catch {}
+    }
+
     try {
-      res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+      res = await fetch(url, fetchOptions);
     } catch (fetchErr) {
       // If bare apex domain failed network/DNS, attempt with www. prefix
       if (!url.includes('://www.')) {
         try {
           const u = new URL(url);
           u.hostname = `www.${u.hostname}`;
-          res = await fetch(u.toString(), { headers, signal: AbortSignal.timeout(8000) });
+          res = await fetch(u.toString(), fetchOptions);
         } catch {}
       }
       if (!res) {
@@ -305,7 +312,7 @@ export async function fetchAndExtractArticle(url, opts = {}) {
         try {
           const u = new URL(url);
           u.hostname = `www.${u.hostname}`;
-          const wwwRes = await fetch(u.toString(), { headers, signal: AbortSignal.timeout(8000) });
+          const wwwRes = await fetch(u.toString(), fetchOptions);
           if (wwwRes.ok) {
             res = wwwRes;
           }

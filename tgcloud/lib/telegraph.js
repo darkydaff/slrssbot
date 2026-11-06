@@ -625,3 +625,52 @@ export async function createTelegraphPage({ title, contentHtml, authorName, auth
   const result = await telegraphRequest('createPage', payload);
   return result.url;
 }
+
+/**
+ * Edit an existing Telegraph page or create a new one if it doesn't exist.
+ * @param {object} params
+ * @param {string} [params.pagePathOrUrl] Path or full URL of page (e.g. "https://telegra.ph/My-Post-11-06" or "My-Post-11-06")
+ * @param {string} params.title Article title
+ * @param {string} params.contentHtml Full HTML content of the article
+ * @param {string} [params.authorName]
+ * @param {string} [params.authorUrl]
+ * @param {string} [params.leadImageUrl]
+ * @param {object} [params.dbInstance]
+ * @returns {Promise<string>} Full telegra.ph URL
+ */
+export async function editTelegraphPage({ pagePathOrUrl, title, contentHtml, authorName, authorUrl, leadImageUrl, dbInstance }) {
+  const token = await getOrCreateTelegraphAccount('RSSTelegramBot', dbInstance);
+  const contentNodes = htmlToTelegraphNodes(contentHtml, { authorUrl });
+
+  if (leadImageUrl && isValidImageUrl(leadImageUrl)) {
+    const startsWithImage = contentNodes[0]?.tag === 'figure' && contentNodes[0]?.children?.[0]?.tag === 'img';
+    if (!startsWithImage) {
+      contentNodes.unshift({
+        tag: 'figure',
+        children: [{ tag: 'img', attrs: { src: leadImageUrl } }],
+      });
+    }
+  }
+
+  const cleanPath = String(pagePathOrUrl || '').replace(/^https?:\/\/telegra\.ph\//i, '').replace(/^\/+/, '');
+
+  if (cleanPath) {
+    try {
+      const payload = {
+        access_token: token,
+        path: cleanPath,
+        title: (title || 'Untitled Post').slice(0, 250),
+        author_name: (authorName || 'RSS Feed').slice(0, 120),
+        author_url: authorUrl || undefined,
+        content: contentNodes,
+        return_content: false,
+      };
+      const result = await telegraphRequest('editPage', payload);
+      if (result?.url) return result.url;
+    } catch (editErr) {
+      console.warn('[editTelegraphPage] editPage failed, falling back to createPage:', editErr?.message);
+    }
+  }
+
+  return createTelegraphPage({ title, contentHtml, authorName, authorUrl, leadImageUrl, dbInstance });
+}
