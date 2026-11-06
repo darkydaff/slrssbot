@@ -175,4 +175,40 @@ export function showTelegramAlert(message) {
   });
 }
 
+/**
+ * Dynamically set Telegram WebApp header and background colors
+ * @param {{ headerColor?: string, backgroundColor?: string }} colors
+ */
+export function setTelegramColors({ headerColor, backgroundColor } = {}) {
+  if (!tg) return;
+  try {
+    if (headerColor && tg.setHeaderColor) {
+      tg.setHeaderColor(headerColor);
+    }
+    if (backgroundColor && tg.setBackgroundColor) {
+      tg.setBackgroundColor(backgroundColor);
+    }
+  } catch {
+    // Ignore in unsupported environments
+  }
+}
+
+/**
+ * Reset Telegram WebApp colors to native theme
+ */
+export function resetTelegramColors() {
+  if (!tg) return;
+  try {
+    const defaultBg = tg.themeParams?.bg_color || 'bg_color';
+    if (tg.setHeaderColor) {
+      tg.setHeaderColor(defaultBg);
+    }
+    if (tg.setBackgroundColor) {
+      tg.setBackgroundColor(defaultBg);
+    }
+  } catch {
+    // Ignore in unsupported environments
+  }
+}
+
 
