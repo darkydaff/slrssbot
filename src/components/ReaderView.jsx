@@ -11,6 +11,11 @@ import {
   Headphones,
   Type,
   X,
+  Volume2,
+  VolumeX,
+  Play,
+  Pause,
+  Square,
 } from 'lucide-react';
 import {
   setupBackButton,
@@ -25,6 +30,9 @@ import { formatRelativeTime } from '../lib/date.js';
 import { useI18n } from '../lib/i18n.js';
 import {
   cleanArticleContent,
+  calculateReadingTimeMinutes,
+  formatReadingTime,
+  extractPlainTextForSpeech,
   FONT_SIZE_MAP,
   LINE_HEIGHT_MAP,
   FONT_FAMILY_MAP,
@@ -117,6 +125,38 @@ export function ReaderView({
     };
   }, [typography.theme]);
 
+  const hasSpeechSynthesis = typeof window !== 'undefined' && 'speechSynthesis' in window;
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isSpeechPaused, setIsSpeechPaused] = useState(false);
+  const [speechRate, setSpeechRate] = useState(1);
+  const [scrollProgress, setScrollProgress] = useState(0);
+
+  // Track reading scroll progress
+  useEffect(() => {
+    const handleScroll = () => {
+      const totalHeight = document.documentElement.scrollHeight - window.innerHeight;
+      if (totalHeight <= 0) {
+        setScrollProgress(0);
+        return;
+      }
+      const current = window.scrollY;
+      const pct = Math.min(100, Math.max(0, (current / totalHeight) * 100));
+      setScrollProgress(pct);
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  // Cleanup speech synthesis on unmount or article change
+  useEffect(() => {
+    return () => {
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, [article?.id]);
+
   if (!article) return null;
 
   const isStarred = Boolean(article.isStarred);
@@ -151,6 +191,79 @@ export function ReaderView({
   const rawContent = article.content || article.summary || `<p>${t('no_content_preview')}</p>`;
   const sanitizedContent = useMemo(() => cleanArticleContent(rawContent), [rawContent]);
 
+  const readingTime = useMemo(
+    () => formatReadingTime(calculateReadingTimeMinutes(article.content || article.summary), lang),
+    [article.content, article.summary, lang]
+  );
+
+  const handleToggleSpeech = () => {
+    if (!hasSpeechSynthesis) return;
+
+    if (isSpeaking) {
+      if (isSpeechPaused) {
+        window.speechSynthesis.resume();
+        setIsSpeechPaused(false);
+      } else {
+        window.speechSynthesis.pause();
+        setIsSpeechPaused(true);
+      }
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const titleText = article.title ? `${article.title}. ` : '';
+    const bodyText = extractPlainTextForSpeech(sanitizedContent || article.summary || '');
+    const fullSpeechText = `${titleText}${bodyText}`.slice(0, 50000);
+
+    if (!fullSpeechText.trim()) return;
+
+    const utterance = new SpeechSynthesisUtterance(fullSpeechText);
+    utterance.rate = speechRate;
+    const localeMap = {
+      en: 'en-US',
+      uk: 'uk-UA',
+      'zh-Hans': 'zh-CN',
+      'zh-Hant': 'zh-TW',
+      es: 'es-ES',
+      fr: 'fr-FR',
+      de: 'de-DE',
+      it: 'it-IT',
+      tr: 'tr-TR',
+      ja: 'ja-JP',
+      pt: 'pt-BR',
+      id: 'id-ID',
+    };
+    utterance.lang = localeMap[lang] || 'en-US';
+
+    utterance.onend = () => {
+      setIsSpeaking(false);
+      setIsSpeechPaused(false);
+    };
+    utterance.onerror = () => {
+      setIsSpeaking(false);
+      setIsSpeechPaused(false);
+    };
+
+    window.speechSynthesis.speak(utterance);
+    setIsSpeaking(true);
+    setIsSpeechPaused(false);
+  };
+
+  const handleStopSpeech = () => {
+    if (hasSpeechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    setIsSpeaking(false);
+    setIsSpeechPaused(false);
+  };
+
+  const handleChangeSpeechRate = (newRate) => {
+    setSpeechRate(newRate);
+    if (isSpeaking) {
+      handleStopSpeech();
+    }
+  };
+
   return (
     <div
       className={`min-h-screen pb-24 transition-colors duration-200 ${themeClass}`}
@@ -165,13 +278,21 @@ export function ReaderView({
     >
       {/* Top Navigation Bar */}
       <nav
-        className="sticky top-0 z-40 flex items-center justify-between px-3 py-2.5 backdrop-blur-md border-b"
+        className="sticky top-0 z-40 flex items-center justify-between px-3 py-2.5 backdrop-blur-md border-b relative"
         style={{
           backgroundColor: 'var(--reader-nav-bg)',
           borderColor: 'var(--reader-border)',
           color: 'var(--reader-text)',
         }}
       >
+        {/* Reading Scroll Progress Bar */}
+        <div className="absolute bottom-0 left-0 right-0 h-[2.5px] bg-black/5 dark:bg-white/5 overflow-hidden">
+          <div
+            className="h-full bg-tg-button transition-all duration-75"
+            style={{ width: `${scrollProgress}%` }}
+          />
+        </div>
+
         <button
           type="button"
           onClick={() => {
@@ -186,6 +307,34 @@ export function ReaderView({
         </button>
 
         <div className="flex items-center gap-1">
+          {/* Read Aloud (TTS) Button */}
+          {hasSpeechSynthesis && (
+            <button
+              type="button"
+              onClick={() => {
+                hapticFeedback('light');
+                handleToggleSpeech();
+              }}
+              title={isSpeaking ? (isSpeechPaused ? t('resume_audio') : t('pause_audio')) : t('read_aloud')}
+              className={`p-2 rounded-full active:scale-95 transition-all ${
+                isSpeaking && !isSpeechPaused
+                  ? 'bg-tg-button text-tg-button-text animate-pulse'
+                  : isSpeaking && isSpeechPaused
+                    ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
+                    : 'opacity-90 hover:opacity-100 hover:bg-[var(--reader-interactive-hover)]'
+              }`}
+              style={{ color: isSpeaking ? undefined : 'var(--reader-text)' }}
+            >
+              {isSpeaking && !isSpeechPaused ? (
+                <Volume2 className="w-5 h-5" />
+              ) : isSpeaking && isSpeechPaused ? (
+                <VolumeX className="w-5 h-5" />
+              ) : (
+                <Volume2 className="w-5 h-5 opacity-90" />
+              )}
+            </button>
+          )}
+
           {/* Typography Options Sheet Button */}
           <button
             type="button"
@@ -448,6 +597,76 @@ export function ReaderView({
         </div>
       )}
 
+      {/* Floating Read-Aloud Player Bar */}
+      {isSpeaking && (
+        <aside
+          aria-label="Audio Reader"
+          className="sticky top-[53px] z-30 px-4 py-2 border-b flex items-center justify-between gap-3 shadow-md animate-in slide-in-from-top-2 duration-150 backdrop-blur-md"
+          style={{
+            backgroundColor: 'var(--reader-nav-bg)',
+            borderColor: 'var(--reader-border)',
+            color: 'var(--reader-text)',
+          }}
+        >
+          <div className="flex items-center gap-2 text-xs font-semibold truncate">
+            <Volume2 className={`w-4 h-4 text-tg-button shrink-0 ${!isSpeechPaused ? 'animate-pulse' : ''}`} />
+            <span className="truncate">
+              {isSpeechPaused ? t('pause_audio') : t('read_aloud')}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1.5 shrink-0 text-xs">
+            <select
+              value={speechRate}
+              onChange={(e) => handleChangeSpeechRate(parseFloat(e.target.value))}
+              className="px-1.5 py-0.5 rounded-md border text-[11px] font-semibold cursor-pointer"
+              style={{
+                backgroundColor: 'var(--reader-card-bg)',
+                borderColor: 'var(--reader-border)',
+                color: 'var(--reader-text)',
+              }}
+            >
+              <option value="0.75">0.75x</option>
+              <option value="1">1.0x</option>
+              <option value="1.25">1.25x</option>
+              <option value="1.5">1.5x</option>
+              <option value="2">2.0x</option>
+            </select>
+
+            <button
+              type="button"
+              onClick={() => {
+                hapticFeedback('light');
+                handleToggleSpeech();
+              }}
+              className="p-1.5 rounded-lg border font-bold text-xs"
+              style={{
+                backgroundColor: 'var(--reader-card-bg)',
+                borderColor: 'var(--reader-border)',
+                color: 'var(--reader-text)',
+              }}
+            >
+              {isSpeechPaused ? <Play className="w-3.5 h-3.5 fill-current" /> : <Pause className="w-3.5 h-3.5 fill-current" />}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                hapticFeedback('light');
+                handleStopSpeech();
+              }}
+              className="p-1.5 rounded-lg border hover:bg-red-500/10 text-red-500"
+              style={{
+                borderColor: 'var(--reader-border)',
+              }}
+              title={t('stop_audio')}
+            >
+              <Square className="w-3.5 h-3.5 fill-current" />
+            </button>
+          </div>
+        </aside>
+      )}
+
       {/* Hero Image (if available) */}
       {article.leadImageUrl && (
         <div className="w-full max-h-80 overflow-hidden bg-black/10 border-b border-inherit">
@@ -498,6 +717,8 @@ export function ReaderView({
           )}
           <span>•</span>
           <span>{timeStr}</span>
+          <span>•</span>
+          <span>{readingTime}</span>
           {article.author && article.author !== article.feedTitle && (
             <>
               <span>•</span>

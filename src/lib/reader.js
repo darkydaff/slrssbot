@@ -94,3 +94,85 @@ export const THEME_OPTIONS = [
   { key: 'oled', label: 'OLED', icon: '🖤', bg: '#000000', fg: '#ffffff', border: '#262626' },
 ];
 
+/**
+ * Calculate estimated reading time in minutes from HTML or text.
+ * Standard heuristic:
+ *  - CJK characters: ~400 characters per minute.
+ *  - Space-separated languages: ~200 words per minute.
+ * @param {string} textOrHtml
+ * @returns {number}
+ */
+export function calculateReadingTimeMinutes(textOrHtml) {
+  if (!textOrHtml || typeof textOrHtml !== 'string') return 1;
+
+  const plain = textOrHtml
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .trim();
+
+  if (!plain) return 1;
+
+  const cjkMatches = plain.match(/[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/g);
+  const cjkCount = cjkMatches ? cjkMatches.length : 0;
+
+  const nonCjk = plain.replace(/[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/g, ' ');
+  const words = nonCjk.split(/\s+/).filter(Boolean);
+  const wordCount = words.length;
+
+  const minutes = (wordCount / 200) + (cjkCount / 400);
+  return Math.max(1, Math.round(minutes));
+}
+
+/**
+ * Format reading time based on language code.
+ * @param {number} minutes
+ * @param {string} [lang='en']
+ * @returns {string}
+ */
+export function formatReadingTime(minutes, lang = 'en') {
+  const m = Math.max(1, Math.round(minutes || 1));
+  const l = (lang || 'en').toLowerCase();
+
+  if (l.startsWith('uk') || l.startsWith('ru')) return `${m} хв читання`;
+  if (l.startsWith('zh-hant') || l.startsWith('zh-tw') || l.startsWith('zh-hk')) return `${m} 分鐘閱讀`;
+  if (l.startsWith('zh')) return `${m} 分钟阅读`;
+  if (l.startsWith('es')) return `${m} min de lectura`;
+  if (l.startsWith('fr')) return `${m} min de lecture`;
+  if (l.startsWith('de')) return `${m} Min. Lesezeit`;
+  if (l.startsWith('it')) return `${m} min di lettura`;
+  if (l.startsWith('tr')) return `${m} dk okuma`;
+  if (l.startsWith('ja')) return `${m} 分で読める`;
+  if (l.startsWith('pt')) return `${m} min de leitura`;
+  if (l.startsWith('id')) return `${m} mnt baca`;
+
+  return `${m} min read`;
+}
+
+/**
+ * Extract clean, continuous plain text suitable for Web Speech synthesis.
+ * Strips code blocks, figures, links markup, and collapses whitespace.
+ * @param {string} textOrHtml
+ * @returns {string}
+ */
+export function extractPlainTextForSpeech(textOrHtml) {
+  if (!textOrHtml || typeof textOrHtml !== 'string') return '';
+  return textOrHtml
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+    .replace(/<(figure|pre|code|table)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+    .replace(/<\/(p|div|h[1-6]|li|blockquote|section|article)>/gi, '. ')
+    .replace(/<br\s*\/?>/gi, '. ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&#39;/gi, "'")
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ')
+    .replace(/\.{2,}/g, '.')
+    .trim();
+}
+

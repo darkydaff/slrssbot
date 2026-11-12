@@ -1,8 +1,9 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import { Star, CheckCircle, Circle, Zap, ExternalLink } from 'lucide-react';
 import { hapticFeedback, openExternalLink } from '../lib/telegram.js';
 import { formatRelativeTime } from '../lib/date.js';
 import { useI18n } from '../lib/i18n.js';
+import { calculateReadingTimeMinutes, formatReadingTime } from '../lib/reader.js';
 
 export { formatRelativeTime };
 
@@ -17,6 +18,10 @@ export function ArticleCard({
   const isUnread = !article.isRead;
   const isStarred = Boolean(article.isStarred);
   const timeStr = formatRelativeTime(article.publishedAt || article.createdAt, lang);
+  const readingTime = useMemo(
+    () => formatReadingTime(calculateReadingTimeMinutes(article.content || article.summary), lang),
+    [article.content, article.summary, lang]
+  );
 
   // Swipe gesture state
   const [swipeOffset, setSwipeOffset] = useState(0);
@@ -180,6 +185,8 @@ export function ArticleCard({
                   {article.feedTitle}
                 </span>
                 <span>•</span>
+                <span className="shrink-0">{readingTime}</span>
+                <span>•</span>
                 <span className="shrink-0">{timeStr}</span>
                 {article.category && article.category !== 'General' && (
                   <>
@@ -256,7 +263,11 @@ export function ArticleCard({
                   </>
                 )}
               </div>
-              <span className="shrink-0">{timeStr}</span>
+              <div className="flex items-center gap-1.5 shrink-0 text-tg-hint text-xs">
+                <span>{readingTime}</span>
+                <span>•</span>
+                <span>{timeStr}</span>
+              </div>
             </div>
 
             {/* Main Content & Thumbnail */}

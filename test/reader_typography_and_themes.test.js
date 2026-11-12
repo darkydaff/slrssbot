@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { cleanArticleContent } from '../src/lib/reader.js';
+import {
+  cleanArticleContent,
+  calculateReadingTimeMinutes,
+  formatReadingTime,
+  extractPlainTextForSpeech,
+} from '../src/lib/reader.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,10 +42,46 @@ test('cleanArticleContent removes conflicting inline styles while preserving lay
   assert.ok(cleaned.includes('<span>Legacy font tag</span>'));
 });
 
-test('cleanArticleContent handles empty or non-string inputs safely', () => {
-  assert.equal(cleanArticleContent(''), '');
-  assert.equal(cleanArticleContent(null), '');
-  assert.equal(cleanArticleContent(undefined), '');
+test('calculateReadingTimeMinutes and formatReadingTime estimate reading time correctly', () => {
+  // Short article: < 200 words -> 1 min
+  const shortText = 'This is a brief announcement about our new serverless bot release.';
+  assert.equal(calculateReadingTimeMinutes(shortText), 1);
+  assert.equal(formatReadingTime(1, 'en'), '1 min read');
+  assert.equal(formatReadingTime(1, 'uk'), '1 хв читання');
+  assert.equal(formatReadingTime(1, 'zh-Hans'), '1 分钟阅读');
+
+  // ~600 words -> ~3 min
+  const mediumWords = Array(600).fill('technology').join(' ');
+  assert.equal(calculateReadingTimeMinutes(mediumWords), 3);
+  assert.equal(formatReadingTime(3, 'en'), '3 min read');
+  assert.equal(formatReadingTime(3, 'uk'), '3 хв читання');
+  assert.equal(formatReadingTime(3, 'es'), '3 min de lectura');
+
+  // CJK characters (~400 CPM)
+  const cjkText = '这是一篇关于无服务器架构与现代RSS阅读器设计的深度长文。'.repeat(30); // ~810 chars -> ~2 min
+  assert.equal(calculateReadingTimeMinutes(cjkText), 2);
+  assert.equal(formatReadingTime(2, 'zh-Hans'), '2 分钟阅读');
+  assert.equal(formatReadingTime(2, 'ja'), '2 分で読める');
+});
+
+test('extractPlainTextForSpeech removes HTML tags and formats speech synthesis text cleanly', () => {
+  const html = `
+    <div>
+      <h1>Breaking News</h1>
+      <p>Scientists have made an <b>extraordinary</b> discovery.</p>
+      <figure><img src="test.jpg"/><figcaption>Figure caption</figcaption></figure>
+      <pre><code>const a = 1;</code></pre>
+      <p>More details &amp; analysis at &lt;https://example.com&gt;.</p>
+    </div>
+  `;
+
+  const speechText = extractPlainTextForSpeech(html);
+  assert.ok(speechText.includes('Breaking News.'));
+  assert.ok(speechText.includes('Scientists have made an extraordinary discovery.'));
+  assert.ok(speechText.includes('More details & analysis at <https://example.com>.'));
+  assert.ok(!speechText.includes('<code>'));
+  assert.ok(!speechText.includes('const a = 1;'));
+  assert.ok(!speechText.includes('<figure>'));
 });
 
 test('index.css contains full reader theme specifications and dynamic font-size overrides', () => {

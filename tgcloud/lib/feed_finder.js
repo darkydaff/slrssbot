@@ -139,9 +139,55 @@ export function getPlatformFeedCandidates(rawUrl, html = '') {
       candidates.push(`${u.origin}/feed/`);
     }
 
-    // 4. GitHub
-    if (host === 'github.com' && path.includes('/releases')) {
-      candidates.push(`${u.origin}${path}.atom`);
+    // 4. Reddit
+    if (host.includes('reddit.com')) {
+      if (path.startsWith('/r/') || path.startsWith('/user/')) {
+        candidates.push(`${u.origin}${path}/.rss`);
+        candidates.push(`${u.origin}${path}.rss`);
+      } else if (!path || path === '/') {
+        candidates.push(`https://www.reddit.com/.rss`);
+      }
+    }
+
+    // 5. YouTube (channel, playlist, user, handle)
+    if (host.includes('youtube.com') || host.includes('youtu.be')) {
+      const channelMatch = path.match(/\/channel\/([a-zA-Z0-9_-]+)/);
+      if (channelMatch) {
+        candidates.push(`https://www.youtube.com/feeds/videos.xml?channel_id=${channelMatch[1]}`);
+      }
+      const playlistMatch = (u.search || '').match(/[?&]list=([a-zA-Z0-9_-]+)/);
+      if (playlistMatch) {
+        candidates.push(`https://www.youtube.com/feeds/videos.xml?playlist_id=${playlistMatch[1]}`);
+      }
+      const userMatch = path.match(/\/user\/([a-zA-Z0-9_-]+)/);
+      if (userMatch) {
+        candidates.push(`https://www.youtube.com/feeds/videos.xml?user=${userMatch[1]}`);
+      }
+      if (html) {
+        const idMatch = html.match(/["'](?:channelId|externalId)["']\s*:\s*["']([a-zA-Z0-9_-]{20,})["']/i) ||
+                        html.match(/itemprop=["']channelId["']\s+content=["']([a-zA-Z0-9_-]{20,})["']/i) ||
+                        html.match(/channel_id=([a-zA-Z0-9_-]{20,})/i);
+        if (idMatch) {
+          candidates.push(`https://www.youtube.com/feeds/videos.xml?channel_id=${idMatch[1]}`);
+        }
+      }
+    }
+
+    // 6. GitHub (releases, commits, tags, repository)
+    if (host === 'github.com') {
+      if (path.includes('/releases')) {
+        candidates.push(`${u.origin}${path}.atom`);
+      } else if (path.includes('/commits')) {
+        candidates.push(`${u.origin}${path}.atom`);
+      } else if (path.includes('/tags')) {
+        candidates.push(`${u.origin}${path}.atom`);
+      } else {
+        const repoParts = path.split('/').filter(Boolean);
+        if (repoParts.length === 2) {
+          candidates.push(`${u.origin}/${repoParts[0]}/${repoParts[1]}/releases.atom`);
+          candidates.push(`${u.origin}/${repoParts[0]}/${repoParts[1]}/commits.atom`);
+        }
+      }
     }
 
     // Generic fallbacks

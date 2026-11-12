@@ -4,7 +4,7 @@
 
 import { db, api, fetch, BotApiError } from 'sdk';
 import { eq, and, sql, desc } from 'sdk/db';
-import { subscriptions, feedStates, feedEntries } from '../schema.js';
+import { subscriptions, feedStates, feedEntries, botConfig } from '../schema.js';
 import { parseFeed } from './rss.js';
 import { formatPost, formatChannelPost, matchesFilter, truncate, extractCleanSummary, decodeEntities, cleanArticleContent } from './formatter.js';
 import { getChatLanguage } from './i18n.js';
@@ -714,13 +714,122 @@ export async function migrateLegacySubscriptions() {
 }
 
 /**
+ * Evaluate adaptive backoff for a feed based on errorCount and lastCheckedAt.
+ *  - errorCount < 3: poll normally every cycle (5m)
+ *  - errorCount 3..5: 30 minutes backoff (1800s)
+ *  - errorCount 6..11: 2 hours backoff (7200s)
+ *  - errorCount >= 12: 6 hours backoff (21600s)
+ * @param {object|null} state
+ * @param {number} [now]
+ * @returns {boolean}
+ */
+export function shouldPollFeed(state, now = Date.now()) {
+  if (!state || !state.lastCheckedAt) return true;
+  const errorCount = state.errorCount || 0;
+  if (errorCount < 3) return true;
+
+  const lastCheckedMs = state.lastCheckedAt instanceof Date
+    ? state.lastCheckedAt.getTime()
+    : (typeof state.lastCheckedAt === 'number'
+      ? (state.lastCheckedAt < 1e11 ? state.lastCheckedAt * 1000 : state.lastCheckedAt)
+      : new Date(state.lastCheckedAt).getTime());
+
+  if (isNaN(lastCheckedMs)) return true;
+  const elapsedSec = (now - lastCheckedMs) / 1000;
+
+  if (errorCount < 6) return elapsedSec >= 1800;
+  if (errorCount < 12) return elapsedSec >= 7200;
+  return elapsedSec >= 21600;
+}
+
+/**
+ * Prune non-starred read entries older than retentionDays (default 45 days).
+ * Guarantees that at least `keepMinPerFeed` (default 15) recent entries are preserved per feed.
+ * Never prunes any article starred by any user.
+ * Cleans up orphaned user_article_states.
+ * @param {object} [opts]
+ * @param {number} [opts.retentionDays=45]
+ * @param {number} [opts.keepMinPerFeed=15]
+ * @returns {Promise<{prunedCount: number, error: string|null}>}
+ */
+export async function pruneOldEntries({ retentionDays = 45, keepMinPerFeed = 15 } = {}) {
+  const cutoffSec = Math.floor(Date.now() / 1000) - (retentionDays * 86400);
+
+  try {
+    const res = await db.run(sql`
+      DELETE FROM feed_entries
+      WHERE created_at < ${cutoffSec}
+        AND id NOT IN (
+          SELECT entry_id FROM user_article_states WHERE is_starred = 1
+        )
+        AND id NOT IN (
+          SELECT id FROM (
+            SELECT id, row_number() OVER (PARTITION BY feed_url ORDER BY published_at DESC, id DESC) as rn
+            FROM feed_entries
+          ) WHERE rn <= ${keepMinPerFeed}
+        )
+    `);
+
+    // Clean up orphaned user reading states
+    await db.run(sql`
+      DELETE FROM user_article_states
+      WHERE entry_id NOT IN (SELECT id FROM feed_entries)
+    `);
+
+    const prunedCount = res?.rowsAffected || 0;
+    return { prunedCount, error: null };
+  } catch (err) {
+    console.warn('[pruneOldEntries] error:', err.message);
+    return { prunedCount: 0, error: err.message };
+  }
+}
+
+/**
+ * Run safe retention pruning once daily during poll cycles.
+ */
+export async function maybeRunDailyPruning() {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const lastPrunedConfig = await db.select()
+      .from(botConfig)
+      .where(eq(botConfig.key, 'last_pruned_date'))
+      .get();
+
+    if (lastPrunedConfig?.value === today) {
+      return null;
+    }
+
+    const outcome = await pruneOldEntries({ retentionDays: 45, keepMinPerFeed: 15 });
+
+    await db.insert(botConfig).values({
+      key: 'last_pruned_date',
+      value: today,
+    }).onConflictDoUpdate({
+      target: botConfig.key,
+      set: { value: today, updatedAt: new Date() },
+    }).run();
+
+    return outcome;
+  } catch (err) {
+    console.warn('[maybeRunDailyPruning] error:', err.message);
+    return null;
+  }
+}
+
+/**
  * Poll all active feeds registered across subscriptions.
  * Processes feeds in concurrent batches to prevent serverless execution timeouts.
- * @returns {Promise<Array<{feedUrl: string, newItemsCount: number, error: string|null}>>}
+ * Supports adaptive backoff for unhealthy feeds unless force is requested.
+ * @param {object} [opts]
+ * @param {boolean} [opts.force=false]
+ * @returns {Promise<Array<{feedUrl: string, newItemsCount: number, error: string|null, skipped?: boolean, reason?: string}>>}
  */
-export async function pollAllFeeds() {
+export async function pollAllFeeds(opts = {}) {
   // Migrate any legacy subscriptions on poll
   await migrateLegacySubscriptions();
+
+  // Automatic daily retention pruning
+  await maybeRunDailyPruning();
 
   // Get all unique feed URLs from active subscriptions
   const activeSubs = await db.select({ feedUrl: subscriptions.feedUrl })
@@ -729,11 +838,32 @@ export async function pollAllFeeds() {
     .groupBy(subscriptions.feedUrl)
     .all();
 
+  // Fetch feed states to evaluate adaptive backoff
+  const allStates = await db.select().from(feedStates).all();
+  const stateMap = new Map(allStates.map((s) => [s.feedUrl, s]));
+
   const results = [];
   const BATCH_SIZE = 3;
+  const now = Date.now();
 
-  for (let i = 0; i < activeSubs.length; i += BATCH_SIZE) {
-    const batch = activeSubs.slice(i, i + BATCH_SIZE);
+  const feedsToPoll = [];
+  for (const row of activeSubs) {
+    const state = stateMap.get(row.feedUrl);
+    if (!opts.force && !shouldPollFeed(state, now)) {
+      results.push({
+        feedUrl: row.feedUrl,
+        newItemsCount: 0,
+        error: null,
+        skipped: true,
+        reason: 'adaptive_backoff',
+      });
+    } else {
+      feedsToPoll.push(row);
+    }
+  }
+
+  for (let i = 0; i < feedsToPoll.length; i += BATCH_SIZE) {
+    const batch = feedsToPoll.slice(i, i + BATCH_SIZE);
     const settled = await Promise.allSettled(batch.map((row) => pollSingleFeed(row.feedUrl)));
 
     for (let j = 0; j < settled.length; j++) {

@@ -39,6 +39,35 @@ test('getPlatformFeedCandidates detects Medium publications', () => {
   assert.ok(candidates.includes('https://medium.com/feed/@username'));
 });
 
+test('getPlatformFeedCandidates detects Reddit subreddits and users', () => {
+  const subCandidates = getPlatformFeedCandidates('https://www.reddit.com/r/technology');
+  assert.ok(subCandidates.includes('https://www.reddit.com/r/technology/.rss'));
+
+  const userCandidates = getPlatformFeedCandidates('https://reddit.com/user/spez');
+  assert.ok(userCandidates.includes('https://reddit.com/user/spez/.rss'));
+});
+
+test('getPlatformFeedCandidates detects YouTube channels, playlists and handles', () => {
+  const channelCandidates = getPlatformFeedCandidates('https://www.youtube.com/channel/UC1234567890abcdef');
+  assert.ok(channelCandidates.includes('https://www.youtube.com/feeds/videos.xml?channel_id=UC1234567890abcdef'));
+
+  const playlistCandidates = getPlatformFeedCandidates('https://www.youtube.com/playlist?list=PL1234567890');
+  assert.ok(playlistCandidates.includes('https://www.youtube.com/feeds/videos.xml?playlist_id=PL1234567890'));
+
+  const htmlWithId = '<meta itemprop="channelId" content="UC9999999999999999999999" />';
+  const handleCandidates = getPlatformFeedCandidates('https://www.youtube.com/@mkbhd', htmlWithId);
+  assert.ok(handleCandidates.includes('https://www.youtube.com/feeds/videos.xml?channel_id=UC9999999999999999999999'));
+});
+
+test('getPlatformFeedCandidates detects GitHub repositories, releases and commits', () => {
+  const repoCandidates = getPlatformFeedCandidates('https://github.com/torvalds/linux');
+  assert.ok(repoCandidates.includes('https://github.com/torvalds/linux/releases.atom'));
+  assert.ok(repoCandidates.includes('https://github.com/torvalds/linux/commits.atom'));
+
+  const tagCandidates = getPlatformFeedCandidates('https://github.com/torvalds/linux/tags');
+  assert.ok(tagCandidates.includes('https://github.com/torvalds/linux/tags.atom'));
+});
+
 test('isTelegramChannelUrl and extractChannelUsername handle public channels directly', () => {
   assert.equal(isTelegramChannelUrl('https://t.me/Crimeanwind'), true);
   assert.equal(isTelegramChannelUrl('https://t.me/s/durov'), true);
