@@ -34,9 +34,6 @@ svg{display:block;width:100%;height:60px;overflow:visible}
 .fill{height:100%;background:var(--btn);border-radius:3px}
 .rw{display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.05)}
 .rw:last-child{border:none}
-.ft{display:flex;gap:8px;align-items:center;margin-top:10px}
-.btn{flex:1;background:var(--btn);color:var(--btntxt);border:none;border-radius:8px;padding:8px 0;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px}
-.btn.sec{background:var(--sbg);color:var(--txt)}
 </style></head>
 <body>
 <div class="hd"><div><div class="tl"><span class="dot"></span>RSS Bot Admin</div><div class="sub" id="up">Live Stats</div></div><div class="sub" id="ver">v2.0</div></div>
@@ -89,11 +86,6 @@ svg{display:block;width:100%;height:60px;overflow:visible}
 <div class="card"><div class="clab">NEW TODAY</div><div class="cval" id="au_new">--</div></div>
 </div>
 <div class="card"><div class="rw"><span>Articles Read</span><b id="au_rd">--</b></div><div class="rw"><span>Telegraph Pages</span><b id="au_tg">--</b></div></div>
-</div>
-
-<div class="ft">
-<button class="btn" onclick="req('refresh')">🔄 Refresh</button>
-<button class="btn sec" onclick="req('poll')">⚡ Poll Now</button>
 </div>
 
 <script>
@@ -173,15 +165,6 @@ function draw(anim){
   $('ln').setAttribute('d',path);
   $('ar').setAttribute('d',n>1?path+' L'+W+','+H+' L0,'+H+' Z':'');
   $('dots').innerHTML=pts.map(p=>'<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.8" fill="var(--btn)"/>').join('');
-}
-function req(action){
-  if(T&&T.HapticFeedback)T.HapticFeedback.impactOccurred('light');
-  if(T&&T.sendRequest){
-    $('up').textContent=action==='poll'?'Polling...':'Refreshing...';
-    let done=false;
-    const timer=setTimeout(()=>{if(!done){done=true;draw(false);}},6000);
-    T.sendRequest('stats:'+action,()=>{if(!done){done=true;clearTimeout(timer);draw(true);}});
-  }
 }
 draw(false);
 if(T){
