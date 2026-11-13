@@ -137,15 +137,17 @@ export default async function (message, ctx) {
  * Resolve target chat (current chat or specified channel/group).
  * Verifies that the sender and the bot have administrative permissions in the target chat.
  */
-async function resolveTargetChat(message, args, isSubCommand = false) {
+async function resolveTargetChat(message, args, isSubCommand = false, lang = null) {
   const currentChatId = message.chat.id;
   const fromId = message.from?.id;
+  const effectiveLang = lang || await getChatLanguage(currentChatId, message.from?.language_code);
+  const currentChatTitle = message.chat.title || t(effectiveLang, 'this_chat');
 
   // If user only passed @channel without a feed URL in /sub, treat it as a request to follow that public channel
   if (isSubCommand && args.length === 1 && args[0].startsWith('@')) {
     return {
       targetChatId: currentChatId,
-      targetTitle: message.chat.title || 'this chat',
+      targetTitle: currentChatTitle,
       remainingArgs: [`https://t.me/s/${args[0].slice(1)}`],
     };
   }
@@ -153,7 +155,7 @@ async function resolveTargetChat(message, args, isSubCommand = false) {
   // If user passed a lone chat ID (-100...) without a feed URL for /sub
   if (isSubCommand && args.length === 1 && /^-100\d+$/.test(args[0])) {
     return {
-      error: `ℹ️ <b>Missing Feed URL:</b>\nTo subscribe a channel to an RSS feed, include the feed URL:\n<code>/sub ${escapeHtml(args[0])} &lt;feed_url&gt;</code>`,
+      error: t(effectiveLang, 'sub_usage'),
     };
   }
 
@@ -174,7 +176,7 @@ async function resolveTargetChat(message, args, isSubCommand = false) {
 
         if (!['creator', 'administrator'].includes(senderMember.status)) {
           return {
-            error: `⚠️ You must be an administrator or creator of <b>${escapeHtml(targetChat.title || targetIdentifier)}</b> to manage subscriptions for it.`,
+            error: t(effectiveLang, 'err_not_chat_admin', { target: escapeHtml(targetChat.title || targetIdentifier) }),
           };
         }
       }
@@ -188,7 +190,7 @@ async function resolveTargetChat(message, args, isSubCommand = false) {
 
       if (botMember.status !== 'administrator') {
         return {
-          error: `⚠️ The bot must be added as an <b>administrator</b> in <b>${escapeHtml(targetChat.title || targetIdentifier)}</b> with permission to post messages.`,
+          error: t(effectiveLang, 'err_bot_not_admin', { target: escapeHtml(targetChat.title || targetIdentifier) }),
         };
       }
 
@@ -199,7 +201,7 @@ async function resolveTargetChat(message, args, isSubCommand = false) {
       };
     } catch (err) {
       return {
-        error: `❌ Could not find or access target chat <code>${escapeHtml(targetIdentifier)}</code>.\nMake sure the username/ID is correct and the bot has been added.`,
+        error: t(effectiveLang, 'err_chat_not_found', { target: escapeHtml(targetIdentifier) }),
       };
     }
   }
@@ -207,7 +209,7 @@ async function resolveTargetChat(message, args, isSubCommand = false) {
   // Acting in current chat
   return {
     targetChatId: currentChatId,
-    targetTitle: message.chat.title || 'this chat',
+    targetTitle: currentChatTitle,
     remainingArgs: args,
   };
 }
@@ -469,15 +471,15 @@ async function handleSub(message, args) {
       customTitle: parsedFeed.title,
     }).run();
 
-    let confirmation = `✅ <b>Subscribed successfully!</b>\n\n`;
-    confirmation += `• <b>Delivering to:</b> ${escapeHtml(targetTitle)}\n`;
-    confirmation += `• <b>Title:</b> ${escapeHtml(parsedFeed.title)}\n`;
+    let confirmation = `${t(lang, 'sub_success_header')}\n\n`;
+    confirmation += `• <b>${escapeHtml(t(lang, 'sub_delivering_to'))}:</b> ${escapeHtml(targetTitle)}\n`;
+    confirmation += `• <b>${escapeHtml(t(lang, 'sub_title_label'))}:</b> ${escapeHtml(parsedFeed.title)}\n`;
     if (discovery.isTelegram) {
-      confirmation += `• <b>Channel:</b> <code>${escapeHtml(feedUrl)}</code> <i>(native Telegram polling)</i>\n`;
+      confirmation += `• <b>${escapeHtml(t(lang, 'sub_channel_label'))}:</b> <code>${escapeHtml(feedUrl)}</code> <i>${escapeHtml(t(lang, 'sub_native_polling'))}</i>\n`;
     } else if (feedUrl !== rawUrl) {
-      confirmation += `• <b>Feed Source:</b> <code>${escapeHtml(feedUrl)}</code> <i>(auto-detected)</i>\n`;
+      confirmation += `• <b>${escapeHtml(t(lang, 'sub_feed_source_label'))}:</b> <code>${escapeHtml(feedUrl)}</code> <i>${escapeHtml(t(lang, 'sub_auto_detected'))}</i>\n`;
     } else {
-      confirmation += `• <b>Feed Source:</b> <code>${escapeHtml(feedUrl)}</code>\n`;
+      confirmation += `• <b>${escapeHtml(t(lang, 'sub_feed_source_label'))}:</b> <code>${escapeHtml(feedUrl)}</code>\n`;
     }
 
     await api.editMessageText({
@@ -490,7 +492,7 @@ async function handleSub(message, args) {
     await api.editMessageText({
       chat_id: chatId,
       message_id: statusMsg.message_id,
-      text: `❌ <b>Failed to subscribe:</b>\n${escapeHtml(err.message)}`,
+      text: t(lang, 'sub_failed', { error: escapeHtml(err.message) }),
       parse_mode: 'HTML',
     });
   }
@@ -501,8 +503,9 @@ async function handleSub(message, args) {
  */
 async function handleUnsub(message, args) {
   const chatId = message.chat.id;
+  const lang = await getChatLanguage(chatId, message.from?.language_code);
 
-  const target = await resolveTargetChat(message, args, false);
+  const target = await resolveTargetChat(message, args, false, lang);
   if (target.error) {
     await api.sendMessage({ chat_id: chatId, text: target.error, parse_mode: 'HTML' });
     return;
@@ -523,13 +526,13 @@ async function handleUnsub(message, args) {
     if (deleted.length > 0) {
       await api.sendMessage({
         chat_id: chatId,
-        text: `✅ Unsubscribed <b>${escapeHtml(targetTitle)}</b> from:\n<code>${escapeHtml(feedUrl)}</code>`,
+        text: t(lang, 'unsub_target_success', { target: escapeHtml(targetTitle), url: escapeHtml(feedUrl) }),
         parse_mode: 'HTML',
       });
     } else {
       await api.sendMessage({
         chat_id: chatId,
-        text: `⚠️ Subscription not found for:\n<code>${escapeHtml(feedUrl)}</code>`,
+        text: t(lang, 'unsub_not_found_url', { url: escapeHtml(feedUrl) }),
         parse_mode: 'HTML',
       });
     }
@@ -541,8 +544,6 @@ async function handleUnsub(message, args) {
     .from(subscriptions)
     .where(eq(subscriptions.chatId, targetChatId))
     .all();
-
-  const lang = await getChatLanguage(chatId, message.from?.language_code);
 
   if (subs.length === 0) {
     await api.sendMessage({
@@ -627,6 +628,7 @@ async function handleList(message, args) {
  */
 async function handlePoll(message, args = [], isForceCmd = false) {
   const chatId = message.chat.id;
+  const lang = await getChatLanguage(chatId, message.from?.language_code);
   let isForce = isForceCmd;
   const cleanArgs = [...args];
 
@@ -635,7 +637,7 @@ async function handlePoll(message, args = [], isForceCmd = false) {
     cleanArgs.shift();
   }
 
-  const target = await resolveTargetChat(message, cleanArgs, false);
+  const target = await resolveTargetChat(message, cleanArgs, false, lang);
   if (target.error) {
     await api.sendMessage({ chat_id: chatId, text: target.error, parse_mode: 'HTML' });
     return;
@@ -652,7 +654,7 @@ async function handlePoll(message, args = [], isForceCmd = false) {
     if (subs.length === 0) {
       await api.sendMessage({
         chat_id: chatId,
-        text: `📭 No active subscriptions to force poll for <b>${escapeHtml(targetTitle)}</b>. Add one with <code>/sub &lt;url&gt;</code>`,
+        text: t(lang, 'force_poll_no_subs', { target: escapeHtml(targetTitle) }),
         parse_mode: 'HTML',
       });
       return;
@@ -660,7 +662,7 @@ async function handlePoll(message, args = [], isForceCmd = false) {
 
     const msg = await api.sendMessage({
       chat_id: chatId,
-      text: `⚡ <b>Force Polling:</b> Fetching the latest posts for <b>${escapeHtml(targetTitle)}</b>...`,
+      text: t(lang, 'force_poll_fetching', { target: escapeHtml(targetTitle) }),
       parse_mode: 'HTML',
     });
 
@@ -676,9 +678,9 @@ async function handlePoll(message, args = [], isForceCmd = false) {
       }
     }
 
-    let report = `⚡ <b>Force Poll Complete:</b> Delivered <b>${sentTotal}</b> latest post(s) into <b>${escapeHtml(targetTitle)}</b>.`;
+    let report = t(lang, 'force_poll_report', { count: sentTotal, target: escapeHtml(targetTitle) });
     if (errors.length > 0) {
-      report += `\n\n⚠️ <b>Errors:</b>\n` + errors.map((e) => `• <code>${escapeHtml(e)}</code>`).join('\n');
+      report += `\n\n${t(lang, 'errors_header')}\n` + errors.map((e) => `• <code>${escapeHtml(e)}</code>`).join('\n');
     }
 
     await api.editMessageText({
@@ -692,19 +694,17 @@ async function handlePoll(message, args = [], isForceCmd = false) {
 
   const msg = await api.sendMessage({
     chat_id: chatId,
-    text: `🔄 Checking feeds for updates...`,
+    text: t(lang, 'poll_checking'),
   });
 
   const results = await pollAllFeeds();
   const totalNew = results.reduce((acc, r) => acc + (r.newItemsCount || 0), 0);
   const errors = results.filter((r) => r.error);
 
-  let report = `✅ <b>Check Complete:</b>\n`;
-  report += `• Feeds checked: <b>${results.length}</b>\n`;
-  report += `• New items delivered: <b>${totalNew}</b>\n`;
+  let report = t(lang, 'poll_complete', { checked: results.length, delivered: totalNew });
 
   if (errors.length > 0) {
-    report += `\n⚠️ <i>${errors.length} feeds encountered network errors.</i>`;
+    report += `\n\n${t(lang, 'poll_errors_note', { count: errors.length })}`;
   }
 
   await api.editMessageText({
@@ -764,8 +764,9 @@ async function handleSet(message, args) {
  */
 async function handleExport(message, args) {
   const chatId = message.chat.id;
+  const lang = await getChatLanguage(chatId, message.from?.language_code);
 
-  const target = await resolveTargetChat(message, args, false);
+  const target = await resolveTargetChat(message, args, false, lang);
   if (target.error) {
     await api.sendMessage({ chat_id: chatId, text: target.error, parse_mode: 'HTML' });
     return;
@@ -781,7 +782,7 @@ async function handleExport(message, args) {
   if (subs.length === 0) {
     await api.sendMessage({
       chat_id: chatId,
-      text: `No subscriptions found for ${escapeHtml(targetTitle)}.`,
+      text: t(lang, 'no_subs_for', { target: escapeHtml(targetTitle) }),
       parse_mode: 'HTML',
     });
     return;
@@ -793,7 +794,7 @@ async function handleExport(message, args) {
   await api.sendDocument({
     chat_id: chatId,
     document: new InputFile(bytes, 'subscriptions.opml', { type: 'text/x-opml' }),
-    caption: `📁 Exported ${subs.length} feeds from ${escapeHtml(targetTitle)} as OPML.`,
+    caption: t(lang, 'export_caption', { count: subs.length, target: targetTitle }),
   });
 }
 
@@ -802,9 +803,10 @@ async function handleExport(message, args) {
  */
 async function handleOpmlUpload(message, doc) {
   const chatId = message.chat.id;
+  const lang = await getChatLanguage(chatId, message.from?.language_code);
 
   const captionArgs = (message.caption || '').trim().split(/\s+/).filter(Boolean);
-  const target = await resolveTargetChat(message, captionArgs, false);
+  const target = await resolveTargetChat(message, captionArgs, false, lang);
   if (target.error) {
     await api.sendMessage({ chat_id: chatId, text: target.error, parse_mode: 'HTML' });
     return;
@@ -814,7 +816,7 @@ async function handleOpmlUpload(message, doc) {
 
   const statusMsg = await api.sendMessage({
     chat_id: chatId,
-    text: `📥 Reading and importing OPML file for <b>${escapeHtml(targetTitle)}</b>...`,
+    text: t(lang, 'opml_reading', { target: escapeHtml(targetTitle) }),
     parse_mode: 'HTML',
   });
 
@@ -827,7 +829,7 @@ async function handleOpmlUpload(message, doc) {
       await api.editMessageText({
         chat_id: chatId,
         message_id: statusMsg.message_id,
-        text: `⚠️ No valid RSS/Atom feed links found in the OPML file.`,
+        text: t(lang, 'opml_no_feeds'),
       });
       return;
     }
@@ -856,14 +858,18 @@ async function handleOpmlUpload(message, doc) {
     await api.editMessageText({
       chat_id: chatId,
       message_id: statusMsg.message_id,
-      text: `✅ <b>OPML Import Completed for ${escapeHtml(targetTitle)}:</b>\n• Discovered: ${feeds.length}\n• Successfully imported: ${importedCount}`,
+      text: t(lang, 'opml_completed', {
+        target: escapeHtml(targetTitle),
+        discovered: feeds.length,
+        imported: importedCount,
+      }),
       parse_mode: 'HTML',
     });
   } catch (err) {
     await api.editMessageText({
       chat_id: chatId,
       message_id: statusMsg.message_id,
-      text: `❌ <b>Failed to process OPML file:</b>\n${escapeHtml(err.message)}`,
+      text: t(lang, 'opml_failed', { error: escapeHtml(err.message) }),
       parse_mode: 'HTML',
     });
   }
@@ -877,13 +883,14 @@ async function handleOpmlUpload(message, doc) {
 async function handleAdminStats(message) {
   const chatId = message.chat.id;
   const fromId = message.from?.id;
+  const lang = await getChatLanguage(chatId, message.from?.language_code);
 
   const userIsAdmin = await isAdmin(fromId);
   if (!userIsAdmin) {
     if (message.chat.type === 'private') {
       await api.sendMessage({
         chat_id: chatId,
-        text: `⚠️ <b>Access Denied:</b> This command is restricted to the bot administrator.`,
+        text: t(lang, 'admin_access_denied'),
         parse_mode: 'HTML',
       });
     }
@@ -892,7 +899,7 @@ async function handleAdminStats(message) {
 
   const statusMsg = await api.sendMessage({
     chat_id: chatId,
-    text: `⏳ <i>Compiling admin analytics and live metrics...</i>`,
+    text: t(lang, 'admin_compiling'),
     parse_mode: 'HTML',
   });
 
@@ -905,11 +912,11 @@ async function handleAdminStats(message) {
     const replyMarkup = {
       inline_keyboard: [
         [
-          { text: '🔄 Refresh', callback_data: 'admin_stats_refresh' },
-          { text: '⚡ Poll Now', callback_data: 'admin_stats_poll' },
+          { text: t(lang, 'btn_refresh'), callback_data: 'admin_stats_refresh' },
+          { text: t(lang, 'btn_poll_now'), callback_data: 'admin_stats_poll' },
         ],
         [
-          { text: '📊 Open Web Dashboard', web_app: { url: `${MINI_APP_URL}?admin=1` } },
+          { text: t(lang, 'btn_web_dashboard'), web_app: { url: `${MINI_APP_URL}?admin=1` } },
         ],
       ],
     };
@@ -953,7 +960,7 @@ async function handleAdminStats(message) {
     await api.editMessageText({
       chat_id: chatId,
       message_id: statusMsg.message_id,
-      text: `❌ <b>Failed to load admin stats:</b>\n${escapeHtml(err.message)}`,
+      text: t(lang, 'admin_failed', { error: escapeHtml(err.message) }),
       parse_mode: 'HTML',
     });
   }

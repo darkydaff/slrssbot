@@ -30,13 +30,14 @@ export default async function (callbackQuery, ctx) {
     }).catch(() => {});
   }
 
-  // 0. Admin stats refresh and poll actions
-  if (data === 'admin_stats_refresh') {
+  // 0. Admin stats refresh and poll actions (supports both keyboard and widget requests)
+  if (data === 'admin_stats_refresh' || data === 'stats:refresh') {
+    const lang = await getChatLanguage(chatId, fromLang);
     const userIsAdmin = await isAdmin(fromId);
     if (!userIsAdmin) {
       await api.answerCallbackQuery({
         callback_query_id: queryId,
-        text: '⚠️ Restricted to administrator.',
+        text: t(lang, 'admin_only'),
         show_alert: true,
       });
       return;
@@ -70,7 +71,7 @@ export default async function (callbackQuery, ctx) {
 
       await api.answerCallbackQuery({
         callback_query_id: queryId,
-        text: '✅ Statistics updated live!',
+        text: t(lang, 'stats_updated'),
       });
     } catch (err) {
       await api.answerCallbackQuery({
@@ -82,12 +83,13 @@ export default async function (callbackQuery, ctx) {
     return;
   }
 
-  if (data === 'admin_stats_poll') {
+  if (data === 'admin_stats_poll' || data === 'stats:poll') {
+    const lang = await getChatLanguage(chatId, fromLang);
     const userIsAdmin = await isAdmin(fromId);
     if (!userIsAdmin) {
       await api.answerCallbackQuery({
         callback_query_id: queryId,
-        text: '⚠️ Restricted to administrator.',
+        text: t(lang, 'admin_only'),
         show_alert: true,
       });
       return;
@@ -95,7 +97,7 @@ export default async function (callbackQuery, ctx) {
 
     await api.answerCallbackQuery({
       callback_query_id: queryId,
-      text: '⚡ Polling feeds across all sources...',
+      text: t(lang, 'polling_all_sources'),
     });
 
     try {
@@ -145,7 +147,7 @@ export default async function (callbackQuery, ctx) {
       }
       keyboard.push(row);
     }
-    keyboard.push([{ text: `🌐 Auto (Telegram App)`, callback_data: `set_lang:auto` }]);
+    keyboard.push([{ text: t(lang, 'btn_auto_lang'), callback_data: `set_lang:auto` }]);
 
     await api.answerCallbackQuery({ callback_query_id: queryId });
     if (message) {
@@ -229,7 +231,7 @@ ${t(lang, 'manage_help')}`;
     const lang = await getChatLanguage(chatId, fromLang);
     const subId = parseInt(data.replace('unsub:', ''), 10);
     if (!subId) {
-      await api.answerCallbackQuery({ callback_query_id: queryId, text: 'Invalid request.' });
+      await api.answerCallbackQuery({ callback_query_id: queryId, text: t(lang, 'invalid_request') });
       return;
     }
 

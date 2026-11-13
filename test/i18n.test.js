@@ -199,3 +199,34 @@ test('client UI translations cover all supported languages without missing label
     }
   }
 });
+
+test('bot handler messages are localized across languages without English fallbacks', () => {
+  const keysToVerify = [
+    'this_chat',
+    'err_not_chat_admin',
+    'err_bot_not_admin',
+    'err_chat_not_found',
+    'sub_success_header',
+    'force_poll_no_subs',
+    'force_poll_fetching',
+    'force_poll_report',
+    'poll_checking',
+    'poll_complete',
+    'export_caption',
+    'opml_reading',
+    'opml_no_feeds',
+    'opml_completed',
+    'admin_only',
+    'btn_refresh',
+    'inline_add_subs_btn',
+  ];
+
+  for (const lang of ['uk', 'es', 'de', 'fr', 'zh-Hans', 'ja']) {
+    for (const key of keysToVerify) {
+      const enVal = t('en', key);
+      const localVal = t(lang, key);
+      assert.ok(localVal && localVal.length > 0, `Missing translation for ${lang}.${key}`);
+      assert.notEqual(localVal, enVal, `Translation for ${lang}.${key} fell back to English`);
+    }
+  }
+});

@@ -35,6 +35,7 @@ export function App() {
   });
 
   const [apiKey, setApiKey] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   // Reader state
   const [currentArticle, setCurrentArticle] = useState(null);
@@ -81,6 +82,7 @@ export function App() {
         if (data.stats) {
           setStats(data.stats);
         }
+        setIsAdmin(Boolean(data.isAdmin));
       }
     } catch (err) {
       console.warn('[fetchFeeds] error:', err.message);
@@ -437,6 +439,8 @@ export function App() {
             onOpenAddModal={() => setIsAddModalOpen(true)}
             onOpenManageModal={() => handleOpenManageModal('feeds')}
             onOpenSettings={() => setIsSettingsOpen(true)}
+            isAdmin={isAdmin}
+            onOpenAdminStats={() => setIsAdminStatsOpen(true)}
           />
 
           <FilterBar
@@ -506,6 +510,7 @@ export function App() {
         onClose={() => setIsSettingsOpen(false)}
         stats={stats}
         apiKey={apiKey}
+        isAdmin={isAdmin}
         onFeedsUpdated={fetchFeeds}
         onOpenAdminStats={() => setIsAdminStatsOpen(true)}
       />

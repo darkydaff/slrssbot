@@ -1,6 +1,7 @@
 import { db, EndpointError } from 'sdk';
 import { eq, sql } from 'sdk/db';
 import { subscriptions, feedStates, chatSettings } from '../schema.js';
+import { isAdmin } from '../lib/admin.js';
 
 export default async function (input, ctx) {
   const user = ctx.initData?.user;
@@ -9,6 +10,7 @@ export default async function (input, ctx) {
   }
 
   const userId = user.id;
+  const userIsAdmin = await isAdmin(userId);
 
   const userSubs = await db.select()
     .from(subscriptions)
@@ -43,6 +45,7 @@ export default async function (input, ctx) {
       },
       apiKey: userSetting?.apiKey || null,
       lang: userSetting?.lang || 'auto',
+      isAdmin: userIsAdmin,
     };
   }
 
@@ -140,6 +143,7 @@ export default async function (input, ctx) {
     },
     apiKey: userSetting?.apiKey || null,
     lang: userSetting?.lang || 'auto',
+    isAdmin: userIsAdmin,
   };
 }
 

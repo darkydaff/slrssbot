@@ -27,11 +27,10 @@ export function SettingsModal({
   onClose,
   stats = { totalFeeds: 0, totalUnread: 0, totalStarred: 0 },
   apiKey: initialApiKey = null,
+  isAdmin = false,
   onFeedsUpdated,
   onOpenAdminStats,
 }) {
-  if (!isOpen) return null;
-
   const user = getTelegramUser();
   const { t, lang, setLang, setAutoLang, isAuto, supportedLanguages } = useI18n();
 
@@ -42,6 +41,7 @@ export function SettingsModal({
   const [isProcessingFile, setIsProcessingFile] = useState(false);
 
   useEffect(() => {
+    if (!isOpen) return;
     if (!apiKey) {
       callApi('manage_feed', { action: 'get_api_key' })
         .then((res) => {
@@ -49,7 +49,9 @@ export function SettingsModal({
         })
         .catch(() => {});
     }
-  }, [apiKey]);
+  }, [isOpen, apiKey]);
+
+  if (!isOpen) return null;
 
   const handleLanguageChange = (e) => {
     const val = e.target.value;
@@ -423,6 +425,29 @@ export function SettingsModal({
               </div>
             </div>
           </div>
+
+          {isAdmin && onOpenAdminStats && (
+            <button
+              type="button"
+              onClick={() => {
+                hapticFeedback('light');
+                onClose?.();
+                onOpenAdminStats();
+              }}
+              className="w-full p-3.5 rounded-xl bg-blue-500/10 hover:bg-blue-500/15 border border-blue-500/25 flex items-center justify-between transition-colors active:scale-[0.99]"
+            >
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-lg bg-blue-500/15 text-tg-button">
+                  <ShieldCheck className="w-4 h-4" />
+                </div>
+                <div className="text-left">
+                  <div className="text-xs font-bold text-tg-text">Admin Dashboard</div>
+                  <div className="text-[11px] text-tg-hint">System metrics, traffic &amp; feed health</div>
+                </div>
+              </div>
+              <span className="text-xs font-semibold text-tg-button">Open →</span>
+            </button>
+          )}
 
           <div className="text-center pt-1 text-[11px] text-tg-hint font-mono">
             Telegram Serverless RSS Bot v1.2

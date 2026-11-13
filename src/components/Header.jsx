@@ -1,5 +1,5 @@
 import React from 'react';
-import { RefreshCw, Plus, SlidersHorizontal, Settings } from 'lucide-react';
+import { RefreshCw, Plus, SlidersHorizontal, Settings, ShieldCheck } from 'lucide-react';
 import { BrandLogo } from './Logo.jsx';
 import { hapticFeedback } from '../lib/telegram.js';
 import { useI18n } from '../lib/i18n.js';
@@ -11,6 +11,8 @@ export function Header({
   onOpenAddModal,
   onOpenManageModal,
   onOpenSettings,
+  isAdmin = false,
+  onOpenAdminStats,
 }) {
   const { t } = useI18n();
 
@@ -64,6 +66,20 @@ export function Header({
         >
           <SlidersHorizontal className="w-5 h-5" />
         </button>
+
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={() => {
+              hapticFeedback('light');
+              onOpenAdminStats?.();
+            }}
+            title="Admin Dashboard"
+            className="p-2 rounded-full text-tg-button hover:bg-tg-secondary active:scale-95 transition-all"
+          >
+            <ShieldCheck className="w-5 h-5" />
+          </button>
+        )}
 
         <button
           type="button"

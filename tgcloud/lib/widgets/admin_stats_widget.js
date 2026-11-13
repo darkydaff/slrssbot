@@ -54,8 +54,8 @@ svg{display:block;width:100%;height:60px;overflow:visible}
 <div class="card"><div class="clab">ARTICLES TODAY</div><div class="cval" id="a_tod">--</div><div class="csub" id="a_tot">-- in DB</div></div>
 <div class="card"><div class="clab">TODAY TRAFFIC</div><div class="cval" id="b_tod">--</div><div class="csub" id="b_sav">-- saved</div></div>
 </div>
-<div class="chart-box"><div class="ch-title"><span>7-Day Activity Trend</span><span id="ch_sum" style="color:var(--btn)"></span></div>
-<svg id="sv" viewBox="0 0 300 60" preserveAspectRatio="none"><path id="ln" fill="none" stroke="var(--btn)" stroke-width="2.5" stroke-linecap="round"/><path id="ar" fill="var(--btn)" fill-opacity=".18"/></svg>
+<div class="chart-box"><div class="ch-title"><span>7-Day Traffic Trend</span><span id="ch_sum" style="color:var(--btn)"></span></div>
+<svg id="sv" viewBox="0 0 300 60" preserveAspectRatio="none"><line x1="0" y1="52" x2="300" y2="52" stroke="rgba(128,128,128,.2)" stroke-width="1"/><path id="ar" fill="var(--btn)" fill-opacity=".18"/><path id="ln" fill="none" stroke="var(--btn)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><g id="dots"></g></svg>
 </div>
 </div>
 
@@ -77,7 +77,8 @@ svg{display:block;width:100%;height:60px;overflow:visible}
 <div class="rw"><span>Failing / Erroring</span><b style="color:var(--r)" id="f_er">--</b></div>
 <div class="rw"><span>Total Subscriptions</span><b id="f_subtot">--</b></div>
 </div>
-<div class="card"><div class="clab" style="margin-bottom:6px">TOP SUBSCRIBED FEEDS</div><div id="top_lst"></div></div>
+<div class="card" style="margin-bottom:8px"><div class="clab" style="margin-bottom:6px">TOP SUBSCRIBED FEEDS</div><div id="top_lst"></div></div>
+<div class="card" id="err_box" style="display:none"><div class="clab" style="margin-bottom:6px;color:var(--r)">RECENT FEED ERRORS</div><div id="err_lst"></div></div>
 </div>
 
 <div id="p3" style="display:none">
@@ -113,13 +114,16 @@ function fb(bytes){
   const i=Math.floor(Math.log(bytes)/Math.log(1024));
   return (bytes/Math.pow(1024,i)).toFixed(i===0?0:1)+' '+(u[i]||'TB');
 }
+function esc(s){
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
 function draw(anim){
   let d=null;
   try{d=T&&T.publicData?JSON.parse(T.publicData):null;}catch(e){}
   if(!d){
-    d={t:Math.floor(Date.now()/1000),u:[28,12,24,28,3],f:[18,17,1,34],a:[42,850,15,64],b:[15800000,9200000,2400000,4200000,38000000],h:[8,12,10,14,19,16,15],top:[['TechCrunch',12],['Ars Technica',9],['The Verge',8]],err:[['Broken Feed','404 Not Found']]};
+    d={t:Math.floor(Date.now()/1000),u:[0,0,0,0,0],f:[0,0,0,0],a:[0,0,0,0],b:[0,0,0,0,0],h:[0,0,0,0,0,0,0],top:[],err:[]};
   }
-  const date=new Date(d.t*1000);
+  const date=new Date((d.t||Math.floor(Date.now()/1000))*1000);
   $('up').textContent='Updated '+date.toLocaleTimeString();
   $('f_tot').textContent=d.f[0];
   $('f_sub').textContent=d.f[1]+' healthy, '+d.f[2]+' err';
@@ -141,28 +145,42 @@ function draw(anim){
   $('f_er').textContent=d.f[2];
   $('f_subtot').textContent=d.f[3];
   let topH='';
-  (d.top||[]).forEach(item=>{topH+='<div class="rw"><span>'+item[0]+'</span><b>'+item[1]+' subs</b></div>';});
+  (d.top||[]).forEach(item=>{topH+='<div class="rw"><span>'+esc(item[0])+'</span><b>'+esc(item[1])+' subs</b></div>';});
   $('top_lst').innerHTML=topH||'<div class="sub">No subscriptions yet</div>';
+  const errs=d.err||[];
+  if(errs.length>0){
+    let errH='';
+    errs.forEach(item=>{errH+='<div class="rw"><span>'+esc(item[0])+'</span><span style="color:var(--r);font-size:11px">'+esc(item[1])+'</span></div>';});
+    $('err_lst').innerHTML=errH;
+    $('err_box').style.display='block';
+  }else{
+    $('err_box').style.display='none';
+  }
   $('au_dau').textContent=d.u[1];
   $('au_wau').textContent=d.u[2];
   $('au_mau').textContent=d.u[3];
   $('au_new').textContent=d.u[4];
   $('au_rd').textContent=d.a[3];
   $('au_tg').textContent=d.a[2];
-  const h=d.h||[0,0,0,0,0,0,0];
+  const h=Array.isArray(d.h)&&d.h.length?d.h:[0,0,0,0,0,0,0];
+  const sumKb=h.reduce((s,v)=>s+(Number(v)||0),0);
+  $('ch_sum').textContent=fb(sumKb*1024);
   const max=Math.max(1,...h);
-  const W=300,H=60,n=h.length;
-  const pts=h.map((v,i)=>[i*(W/(n-1)),H-8-(v/max)*(H-16)]);
+  const W=300,H=60,n=h.length,step=n>1?W/(n-1):W;
+  const pts=h.map((v,i)=>[n>1?i*step:W/2,H-8-(Math.max(0,Number(v)||0)/max)*(H-16)]);
   let path='M'+pts[0][0].toFixed(1)+','+pts[0][1].toFixed(1);
   for(let i=1;i<n;i++)path+=' L'+pts[i][0].toFixed(1)+','+pts[i][1].toFixed(1);
   $('ln').setAttribute('d',path);
-  $('ar').setAttribute('d',path+' L'+W+','+H+' L0,'+H+' Z');
+  $('ar').setAttribute('d',n>1?path+' L'+W+','+H+' L0,'+H+' Z':'');
+  $('dots').innerHTML=pts.map(p=>'<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.8" fill="var(--btn)"/>').join('');
 }
 function req(action){
   if(T&&T.HapticFeedback)T.HapticFeedback.impactOccurred('light');
   if(T&&T.sendRequest){
-    $('up').textContent='Refreshing...';
-    T.sendRequest('stats:'+action,(res)=>{draw(true);});
+    $('up').textContent=action==='poll'?'Polling...':'Refreshing...';
+    let done=false;
+    const timer=setTimeout(()=>{if(!done){done=true;draw(false);}},6000);
+    T.sendRequest('stats:'+action,()=>{if(!done){done=true;clearTimeout(timer);draw(true);}});
   }
 }
 draw(false);

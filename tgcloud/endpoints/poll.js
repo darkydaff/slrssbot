@@ -6,13 +6,17 @@
 import { db, EndpointError } from 'sdk';
 import { subscriptions } from '../schema.js';
 import { pollAllFeeds } from '../lib/poller.js';
+import { isAdmin } from '../lib/admin.js';
 
 export default async function (input, ctx) {
-  // Reject calls originating directly from the Mini App client
+  // Reject calls originating directly from non-admin Mini App clients
   if (ctx?.initData?.user) {
-    throw new EndpointError('Scheduled polling cannot be triggered from the Mini App client', {
-      code: 'FORBIDDEN',
-    });
+    const userIsAdmin = await isAdmin(ctx.initData.user.id);
+    if (!userIsAdmin) {
+      throw new EndpointError('Scheduled polling cannot be triggered from the Mini App client', {
+        code: 'FORBIDDEN',
+      });
+    }
   }
 
   try {
